@@ -1,0 +1,24 @@
+node_modules/
+coverage/
+*.log
+
+# Variables de entorno (proteger credenciales)
+.env
+.env.development
+.env.local
+.env.*.local
+!.env.example
+
+# Ignorar contenido de uploads pero mantener estructura de carpetas
+uploads/*
+!uploads/.gitkeep
+!uploads/*/
+uploads/**/*
+!uploads/**/.gitkeep
+
+# Ignorar contenido de temp pero mantener estructura de carpetas
+temp/*
+!temp/.gitkeep
+!temp/*/
+temp/**/*
+!temp/**/.gitkeep
