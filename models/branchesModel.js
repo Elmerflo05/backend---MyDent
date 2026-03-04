@@ -83,8 +83,8 @@ const createBranch = async (branchData) => {
       user_id_registration
     } = branchData;
 
-    // Si no hay company_id, usar 1 por defecto (primera compañía)
-    const finalCompanyId = company_id || 1;
+    // company_id es opcional (nullable)
+    const finalCompanyId = company_id || null;
 
     // Si se asignó un administrador, obtener sus datos
     let finalManagerName = manager_name;

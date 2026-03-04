@@ -219,7 +219,7 @@ model blood_types {
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model branches {
   branch_id                              Int                            @id @default(autoincrement())
-  company_id                             Int
+  company_id                             Int?
   branch_name                            String                         @db.VarChar(200)
   branch_code                            String?                        @unique @db.VarChar(20)
   phone                                  String?                        @db.VarChar(20)
