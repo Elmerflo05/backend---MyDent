@@ -250,7 +250,7 @@ model branches {
   audit_logs                             audit_logs[]
   branch_payment_methods                 branch_payment_methods[]
   users_branches_administrator_idTousers users?                         @relation("branches_administrator_idTousers", fields: [administrator_id], references: [user_id], onUpdate: NoAction, map: "fk_branches_administrator")
-  companies                              companies                      @relation(fields: [company_id], references: [company_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_branches_company")
+  companies                              companies?                     @relation(fields: [company_id], references: [company_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_branches_company")
   budgets                                budgets[]
   company_contracts                      company_contracts[]
   consultation_rooms                     consultation_rooms[]
