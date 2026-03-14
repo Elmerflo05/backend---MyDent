@@ -690,9 +690,57 @@ const registerPatient = async (req, res) => {
 
     // Manejar errores específicos de BD
     if (error.code === '23505') {
+      // Unique violation
+      if (error.constraint?.includes('email')) {
+        return res.status(409).json({
+          success: false,
+          error: 'El email ya está registrado'
+        });
+      }
+      if (error.constraint?.includes('identification')) {
+        return res.status(409).json({
+          success: false,
+          error: 'Ya existe un paciente con ese número de identificación'
+        });
+      }
       return res.status(409).json({
         success: false,
         error: 'Ya existe un registro con esos datos'
+      });
+    }
+
+    if (error.code === '23503') {
+      // Foreign key violation
+      const detail = error.detail || '';
+      if (detail.includes('branch_id') || error.constraint?.includes('branch')) {
+        return res.status(400).json({
+          success: false,
+          error: 'La sede seleccionada no existe o no está activa'
+        });
+      }
+      if (detail.includes('role_id') || error.constraint?.includes('role')) {
+        return res.status(400).json({
+          success: false,
+          error: 'Error de configuración: rol de paciente no encontrado'
+        });
+      }
+      if (detail.includes('identification_type_id') || error.constraint?.includes('identification')) {
+        return res.status(400).json({
+          success: false,
+          error: 'El tipo de identificación seleccionado no es válido'
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        error: 'Error de integridad referencial: verifique los datos ingresados'
+      });
+    }
+
+    if (error.code === '23514') {
+      // CHECK constraint violation
+      return res.status(400).json({
+        success: false,
+        error: 'Los datos ingresados no cumplen con las validaciones requeridas'
       });
     }
 
