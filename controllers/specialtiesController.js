@@ -33,7 +33,8 @@ const getAllSpecialties = async (req, res) => {
 
 /**
  * Obtiene especialidades disponibles por sede
- * Basado en los médicos asignados a esa sede y sus especialidades
+ * Basado en doctores que tienen HORARIOS ACTIVOS configurados en esa sede
+ * (no solo acceso, sino schedules reales)
  */
 const getSpecialtiesByBranch = async (req, res) => {
   try {
@@ -45,12 +46,17 @@ const getSpecialtiesByBranch = async (req, res) => {
         s.specialty_name,
         s.specialty_description as description
       FROM specialties s
-      INNER JOIN dentist_specialties ds ON s.specialty_id = ds.specialty_id
-      INNER JOIN dentists d ON ds.dentist_id = d.dentist_id
+      INNER JOIN dentist_specialties dsp ON s.specialty_id = dsp.specialty_id
+      INNER JOIN dentists d ON dsp.dentist_id = d.dentist_id
       INNER JOIN users u ON d.user_id = u.user_id
-      WHERE (u.branch_id = $1 OR u.branch_id IS NULL)
-        AND u.role_id = 5
+      INNER JOIN dentist_schedules dsch ON d.dentist_id = dsch.dentist_id
+      WHERE dsch.branch_id = $1
+        AND dsch.is_available = true
+        AND (dsch.status = 'active' OR dsch.status IS NULL)
+        AND dsp.status = 'active'
+        AND d.status = 'active'
         AND u.status = 'active'
+        AND u.role_id IN (3, 5)
         AND s.status = 'active'
       ORDER BY s.specialty_name;
     `;
