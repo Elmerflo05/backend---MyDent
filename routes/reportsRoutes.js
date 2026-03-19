@@ -13,18 +13,19 @@ const {
 } = require('../controllers/reportsController');
 
 // Middleware para verificar roles autorizados para reportes
+// role_id 1 = super_admin, role_id 2 = admin
 const verificarRolReportes = (req, res, next) => {
-  const rolesPermitidos = ['super_admin', 'admin'];
+  const rolesPermitidos = [1, 2];
 
-  if (!req.user || !rolesPermitidos.includes(req.user.role)) {
+  if (!req.user || !rolesPermitidos.includes(req.user.role_id)) {
     return res.status(403).json({
       success: false,
       error: 'Acceso denegado. Solo administradores pueden ver reportes.'
     });
   }
 
-  // Si es admin de sede, forzar su branchId para evitar acceso a otras sedes
-  if (req.user.role === 'admin' && req.user.branch_id) {
+  // Si es admin de sede (role_id 2), forzar su branchId para evitar acceso a otras sedes
+  if (req.user.role_id === 2 && req.user.branch_id) {
     req.query.branchId = req.user.branch_id.toString();
   }
 
