@@ -7,8 +7,12 @@ const {
   getPaymentMethod,
   createNewPaymentMethod,
   updateExistingPaymentMethod,
-  deleteExistingPaymentMethod
+  deleteExistingPaymentMethod,
+  uploadQrImage,
+  deleteQrImage
 } = require('../controllers/branchPaymentMethodsController');
+const { uploadQrImage: uploadQrMiddleware } = require('../config/multerConfig');
+const { s3Upload } = require('../middleware/s3UploadMiddleware');
 
 // Middleware para roles administrativos (pueden gestionar métodos de pago)
 const verificarRolesAdmin = (req, res, next) => {
@@ -48,5 +52,9 @@ router.get('/:id', verificarRolesLectura, getPaymentMethod);
 router.post('/', verificarRolesAdmin, createNewPaymentMethod);
 router.put('/:id', verificarRolesAdmin, updateExistingPaymentMethod);
 router.delete('/:id', verificarRolesAdmin, deleteExistingPaymentMethod);
+
+// Rutas de QR Image (Solo admin)
+router.post('/:id/qr-image', verificarRolesAdmin, uploadQrMiddleware.single('qr_image'), s3Upload('payment-qr', { prefix: 'qr' }), uploadQrImage);
+router.delete('/:id/qr-image', verificarRolesAdmin, deleteQrImage);
 
 module.exports = router;

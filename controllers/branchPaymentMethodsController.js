@@ -7,6 +7,7 @@ const {
   updatePaymentMethod,
   deletePaymentMethod
 } = require('../models/branchPaymentMethodsModel');
+const { deleteFile } = require('../config/s3Client');
 
 /**
  * Obtener métodos de pago de una sede
@@ -187,11 +188,91 @@ const deleteExistingPaymentMethod = async (req, res) => {
   }
 };
 
+/**
+ * Subir imagen QR para un método de pago
+ */
+const uploadQrImage = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'No se proporcionó imagen' });
+    }
+
+    const method = await getPaymentMethodById(parseInt(id));
+    if (!method) {
+      return res.status(404).json({ success: false, error: 'Método de pago no encontrado' });
+    }
+
+    // Si ya tenía QR, eliminar el anterior de S3
+    if (method.qr_image_url) {
+      const oldKey = method.qr_image_url.replace('/uploads/', '');
+      try { await deleteFile(oldKey); } catch (e) { /* ignorar si no existe */ }
+    }
+
+    // El middleware s3Upload ya subió el archivo y puso la ruta en req.file.path
+    const qrImageUrl = req.file.path; // ej: /uploads/payment-qr/qr_1234567890.png
+
+    const updated = await updatePaymentMethod(parseInt(id), {
+      qr_image_url: qrImageUrl,
+      user_id_modification: req.user.user_id
+    });
+
+    res.json({
+      success: true,
+      message: 'Imagen QR subida exitosamente',
+      data: updated
+    });
+  } catch (error) {
+    console.error('Error al subir imagen QR:', error);
+    res.status(500).json({ success: false, error: 'Error al subir imagen QR' });
+  }
+};
+
+/**
+ * Eliminar imagen QR de un método de pago
+ */
+const deleteQrImage = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const method = await getPaymentMethodById(parseInt(id));
+    if (!method) {
+      return res.status(404).json({ success: false, error: 'Método de pago no encontrado' });
+    }
+
+    if (!method.qr_image_url) {
+      return res.status(400).json({ success: false, error: 'Este método no tiene imagen QR' });
+    }
+
+    // Eliminar de S3
+    const s3Key = method.qr_image_url.replace('/uploads/', '');
+    try { await deleteFile(s3Key); } catch (e) { /* ignorar si no existe */ }
+
+    // Limpiar la referencia en DB
+    const updated = await updatePaymentMethod(parseInt(id), {
+      qr_image_url: '',
+      user_id_modification: req.user.user_id
+    });
+
+    res.json({
+      success: true,
+      message: 'Imagen QR eliminada exitosamente',
+      data: updated
+    });
+  } catch (error) {
+    console.error('Error al eliminar imagen QR:', error);
+    res.status(500).json({ success: false, error: 'Error al eliminar imagen QR' });
+  }
+};
+
 module.exports = {
   getPaymentMethods,
   getActivePaymentMethods,
   getPaymentMethod,
   createNewPaymentMethod,
   updateExistingPaymentMethod,
-  deleteExistingPaymentMethod
+  deleteExistingPaymentMethod,
+  uploadQrImage,
+  deleteQrImage
 };

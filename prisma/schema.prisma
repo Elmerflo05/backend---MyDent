@@ -2848,6 +2848,7 @@ model branch_payment_methods {
   account_holder         String?               @db.VarChar(200)
   phone_number           String?               @db.VarChar(20)
   additional_info        String?
+  qr_image_url           String?
   is_active              Boolean?              @default(true)
   status                 String?               @default("active") @db.VarChar(20)
   user_id_registration   Int?

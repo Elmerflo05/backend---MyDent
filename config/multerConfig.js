@@ -219,6 +219,35 @@ const uploadPatientExternalExam = multer({
   }
 });
 
+/**
+ * Filtro de archivos para QR de métodos de pago
+ * Solo permite: JPG, JPEG, PNG
+ */
+const qrImageFileFilter = (req, file, cb) => {
+  const allowedMimeTypes = [
+    'image/jpeg',
+    'image/jpg',
+    'image/png'
+  ];
+
+  if (allowedMimeTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Tipo de archivo no permitido. Solo se permiten JPG o PNG.'), false);
+  }
+};
+
+/**
+ * Configuracion de Multer para imagenes QR de metodos de pago
+ */
+const uploadQrImage = multer({
+  storage: memoryStorage,
+  fileFilter: qrImageFileFilter,
+  limits: {
+    fileSize: 2 * 1024 * 1024 // 2MB maximo
+  }
+});
+
 module.exports = {
   uploadVoucher,
   uploadVoucherPlan,
@@ -226,5 +255,6 @@ module.exports = {
   uploadAuxiliaryExamFiles,
   uploadContractFile,
   uploadClientContract,
-  uploadPatientExternalExam
+  uploadPatientExternalExam,
+  uploadQrImage
 };

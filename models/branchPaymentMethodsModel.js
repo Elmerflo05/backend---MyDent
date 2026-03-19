@@ -31,6 +31,7 @@ const getActivePaymentMethodsByBranch = async (branchId) => {
       bpm.account_holder,
       bpm.phone_number,
       bpm.additional_info,
+      bpm.qr_image_url,
       b.branch_name
     FROM branch_payment_methods bpm
     INNER JOIN branches b ON bpm.branch_id = b.branch_id
@@ -58,6 +59,7 @@ const getAllActivePaymentMethods = async () => {
       bpm.account_holder,
       bpm.phone_number,
       bpm.additional_info,
+      bpm.qr_image_url,
       b.branch_name
     FROM branch_payment_methods bpm
     INNER JOIN branches b ON bpm.branch_id = b.branch_id
@@ -92,8 +94,8 @@ const createPaymentMethod = async (data) => {
     INSERT INTO branch_payment_methods (
       branch_id, method_type, method_name, bank_name,
       account_number, account_holder, phone_number,
-      additional_info, is_active, user_id_registration
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      additional_info, qr_image_url, is_active, user_id_registration
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     RETURNING *
   `;
   const values = [
@@ -105,6 +107,7 @@ const createPaymentMethod = async (data) => {
     data.account_holder || null,
     data.phone_number || null,
     data.additional_info || null,
+    data.qr_image_url || null,
     data.is_active !== undefined ? data.is_active : true,
     data.user_id_registration
   ];
@@ -122,11 +125,11 @@ const updatePaymentMethod = async (paymentMethodId, data) => {
 
   const allowedFields = [
     'method_type', 'method_name', 'bank_name', 'account_number',
-    'account_holder', 'phone_number', 'additional_info', 'is_active'
+    'account_holder', 'phone_number', 'additional_info', 'qr_image_url', 'is_active'
   ];
 
   // Campos opcionales: string vacío se guarda como null
-  const nullableFields = ['bank_name', 'account_number', 'account_holder', 'phone_number', 'additional_info'];
+  const nullableFields = ['bank_name', 'account_number', 'account_holder', 'phone_number', 'additional_info', 'qr_image_url'];
 
   allowedFields.forEach((field) => {
     if (data[field] !== undefined) {
