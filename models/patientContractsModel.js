@@ -340,6 +340,21 @@ const signContract = async (contractId, patientId, signatureData) => {
   return result.rows[0];
 };
 
+// Contar contratos de un paciente por su patient_id (para paginación del portal de paciente)
+const countContractsByPatientId = async (patientId, filters = {}) => {
+  let query = `SELECT COUNT(*) as total FROM patient_contracts WHERE patient_id = $1 AND status = 'active'`;
+  const params = [patientId];
+  let paramIndex = 2;
+
+  if (filters.contract_type) {
+    query += ` AND contract_type = $${paramIndex}`;
+    params.push(filters.contract_type);
+  }
+
+  const result = await pool.query(query, params);
+  return parseInt(result.rows[0].total);
+};
+
 module.exports = {
   getAllPatientContracts,
   getPatientContractById,
@@ -349,5 +364,6 @@ module.exports = {
   countPatientContracts,
   assignContractFromTemplate,
   getContractsByPatientId,
-  signContract
+  signContract,
+  countContractsByPatientId
 };

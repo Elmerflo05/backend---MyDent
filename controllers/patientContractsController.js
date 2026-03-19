@@ -7,7 +7,8 @@ const {
   countPatientContracts,
   assignContractFromTemplate,
   getContractsByPatientId,
-  signContract
+  signContract,
+  countContractsByPatientId
 } = require('../models/patientContractsModel');
 
 const getPatientContracts = async (req, res) => {
@@ -174,15 +175,19 @@ const getMyContracts = async (req, res) => {
       offset: (parseInt(page) - 1) * parseInt(limit)
     };
 
-    const contracts = await getContractsByPatientId(patientId, filters);
+    const [contracts, total] = await Promise.all([
+      getContractsByPatientId(patientId, filters),
+      countContractsByPatientId(patientId, filters)
+    ]);
 
     res.json({
       success: true,
       data: contracts,
       pagination: {
-        total: contracts.length,
+        total,
         page: parseInt(page),
-        limit: parseInt(limit)
+        limit: parseInt(limit),
+        totalPages: Math.ceil(total / parseInt(limit))
       }
     });
   } catch (error) {

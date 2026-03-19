@@ -125,10 +125,14 @@ const updatePaymentMethod = async (paymentMethodId, data) => {
     'account_holder', 'phone_number', 'additional_info', 'is_active'
   ];
 
+  // Campos opcionales: string vacío se guarda como null
+  const nullableFields = ['bank_name', 'account_number', 'account_holder', 'phone_number', 'additional_info'];
+
   allowedFields.forEach((field) => {
     if (data[field] !== undefined) {
       fields.push(`${field} = $${paramIndex}`);
-      values.push(data[field]);
+      const value = nullableFields.includes(field) && data[field] === '' ? null : data[field];
+      values.push(value);
       paramIndex++;
     }
   });
@@ -161,7 +165,8 @@ const updatePaymentMethod = async (paymentMethodId, data) => {
 const deletePaymentMethod = async (paymentMethodId, userId) => {
   const query = `
     UPDATE branch_payment_methods SET
-      status = 'inactive',
+      status = 'deleted',
+      is_active = false,
       user_id_modification = $1,
       date_time_modification = CURRENT_TIMESTAMP
     WHERE payment_method_id = $2 AND status = 'active'

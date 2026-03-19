@@ -18,19 +18,19 @@ const {
 router.use(verificarToken);
 
 // Middleware de autorización - Roles de administración
-// 1: Super Admin, 2: Admin, 3: Doctor, 4: Recepcionista, 5: Técnico Imagen, 6: Técnico Prótesis
+// 1: Super Admin, 2: Admin, 3: Doctor, 4: Recepcionista, 5: Técnico Imagen
 const verificarRolesAdmin = (req, res, next) => {
   const rol = req.user?.role_id;
-  if (![1, 2, 3, 4, 5, 6].includes(rol)) {
+  if (![1, 2, 3, 4, 5].includes(rol)) {
     return res.status(403).json({ mensaje: 'Acceso denegado: Rol no autorizado para administrar contratos' });
   }
   next();
 };
 
-// Middleware para pacientes - Solo rol 7
+// Middleware para pacientes - Solo rol 6 (Paciente)
 const verificarRolPaciente = (req, res, next) => {
   const rol = req.user?.role_id;
-  if (rol !== 7) {
+  if (rol !== 6) {
     return res.status(403).json({ mensaje: 'Acceso denegado: Solo para pacientes' });
   }
   next();

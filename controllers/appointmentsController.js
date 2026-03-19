@@ -348,6 +348,32 @@ const createNewAppointment = async (req, res) => {
       console.log('Info: No se pudo verificar plan de salud (puede no tener):', planError.message);
     }
 
+    // ============================================
+    // VERIFICAR SI ES PACIENTE CONTINUADOR
+    // ============================================
+    let isContinuingPatient = false;
+
+    if (!isFirstFreeConsultation) {
+      // SIEMPRE verificar en BD - nunca confiar solo en el flag del frontend
+      try {
+        const completedCheck = await pool.query(
+          `SELECT COUNT(*) as count FROM appointments
+           WHERE patient_id = $1 AND appointment_status_id IN (3, 4) AND status = 'active'`,
+          [patientId]
+        );
+        if (parseInt(completedCheck.rows[0].count) > 0) {
+          isContinuingPatient = true;
+          appointmentPrice = 0;
+          console.log(`Paciente continuador #${patientId} (verificado en BD) - Sin cobro de cita`);
+        } else if (req.body.is_continuing_patient === true) {
+          // Frontend dice continuador pero BD no lo confirma - ignorar flag
+          console.warn(`ALERTA: Frontend envió is_continuing_patient=true para paciente #${patientId} pero no tiene citas completadas en BD. Ignorando flag.`);
+        }
+      } catch (contError) {
+        console.log('Info: Error verificando estado de continuador:', contError.message);
+      }
+    }
+
     const appointmentData = {
       ...req.body,
       patient_id: patientId,
@@ -519,8 +545,8 @@ const createNewAppointment = async (req, res) => {
     // Si el paciente adjunta un voucher, el pago queda pendiente de verificación
     let incomeCreated = null;
     try {
-      // Si es primera consulta gratis, el precio real es 0
-      const finalAppointmentPrice = isFirstFreeConsultation ? 0 : (newAppointment.price || PRICING.APPOINTMENT_BASE_PRICE);
+      // Si es primera consulta gratis o paciente continuador, el precio es 0
+      const finalAppointmentPrice = (isFirstFreeConsultation || isContinuingPatient) ? 0 : (newAppointment.price || PRICING.APPOINTMENT_BASE_PRICE);
       const discountAmount = req.body.coupon_discount_value || 0;
       const voucherUrl = req.body.voucher || null;
       const paymentMethodId = req.body.payment_method_id || null;
@@ -534,7 +560,9 @@ const createNewAppointment = async (req, res) => {
         item_name: PRICING.APPOINTMENT_ITEM_NAME,
         item_description: isFirstFreeConsultation
           ? 'Primera consulta gratis - Beneficio Plan de Salud'
-          : PRICING.APPOINTMENT_ITEM_DESCRIPTION,
+          : isContinuingPatient
+            ? 'Cita de paciente continuador - Sin cobro de consulta'
+            : PRICING.APPOINTMENT_ITEM_DESCRIPTION,
         amount: finalAppointmentPrice,
         discount_amount: discountAmount,
         currency: PRICING.DEFAULT_CURRENCY,
@@ -550,11 +578,11 @@ const createNewAppointment = async (req, res) => {
         // - Si es primera consulta gratis: 'paid' (no genera deuda)
         // - Si hay voucher: 'pending_verification' (se determina en el modelo)
         // - Si no hay voucher: 'pending' (se determina en el modelo)
-        ...(isFirstFreeConsultation && { payment_status: 'paid' })
+        ...((isFirstFreeConsultation || isContinuingPatient) && { payment_status: 'paid' })
       };
 
       incomeCreated = await procedureIncomeModel.createProcedureIncome(incomeData);
-      const statusMsg = isFirstFreeConsultation ? 'primera consulta gratis (pagado)' : (voucherUrl ? 'pendiente de verificación' : 'pendiente de pago');
+      const statusMsg = isFirstFreeConsultation ? 'primera consulta gratis (pagado)' : isContinuingPatient ? 'paciente continuador (sin cobro)' : (voucherUrl ? 'pendiente de verificación' : 'pendiente de pago');
       console.log(`✅ Ingreso automático #${incomeCreated.income_id} creado para cita #${newAppointment.appointment_id} (${statusMsg})`);
     } catch (incomeError) {
       // Log el error pero no fallar la creación de la cita
