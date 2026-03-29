@@ -162,6 +162,46 @@ const getRadiografiasPricingLegacy = async () => {
     }
   }
 
+  // Mapear campos legacy a alias UI que espera el frontend
+  // El frontend usa nombres nuevos pero la BD almacena los legacy
+  const legacyToUiAliases = {
+    halografiaPanoramica: 'panoramica',
+    radiografiaCefalometrica: 'cefalometrica',
+    halografiaLateral: 'carpal',
+    halografiaPosterior: 'posteriorAnterior',
+    bitewingDerecho: 'bitewingMolares',
+    bitewingIzquierdo: 'bitewingPremolares',
+    alteracionesInmediatas: 'alineadores',
+    escaneoImpresionDigital: 'escaneoIntraoral',
+    modelosEstudio3d: 'modelosDigitales',
+    bjork: 'bjorks',
+  };
+
+  for (const [legacyName, uiName] of Object.entries(legacyToUiAliases)) {
+    if (pricing[legacyName] !== undefined && pricing[uiName] === undefined) {
+      pricing[uiName] = pricing[legacyName];
+    }
+  }
+
+  // estudiosAtm se divide en dos campos UI separados
+  if (pricing.estudiosAtm !== undefined) {
+    if (pricing.atmAbierta === undefined) pricing.atmAbierta = pricing.estudiosAtm;
+    if (pricing.atmCerrada === undefined) pricing.atmCerrada = pricing.estudiosAtm;
+  }
+
+  // Campos de fotografía derivados del campo base
+  if (pricing.radiografias !== undefined) {
+    if (pricing.fotografiaIntraoral === undefined) pricing.fotografiaIntraoral = pricing.radiografias;
+    if (pricing.fotografiaExtraoral === undefined) pricing.fotografiaExtraoral = pricing.radiografias;
+  }
+
+  // Análisis cefalométricos nuevos: usar precio base de análisis existentes
+  const analisisBase = pricing.ricketts || pricing.steiner || 50;
+  const nuevosAnalisis = ['schwartz', 'tweed', 'downs', 'rotJarabak', 'tejidosBlancos'];
+  for (const campo of nuevosAnalisis) {
+    if (pricing[campo] === undefined) pricing[campo] = analisisBase;
+  }
+
   return pricing;
 };
 
@@ -305,11 +345,29 @@ const updateTomografia3DPricingBulk = async (pricingData, userId) => {
 const updateRadiografiasPricingBulk = async (pricingData, userId) => {
   const client = await pool.connect();
 
+  // Mapeo inverso: nombres UI -> nombres legacy en BD
+  const uiToLegacy = {
+    panoramica: 'halografiaPanoramica',
+    cefalometrica: 'radiografiaCefalometrica',
+    carpal: 'halografiaLateral',
+    posteriorAnterior: 'halografiaPosterior',
+    atmAbierta: 'estudiosAtm',
+    atmCerrada: 'estudiosAtm',
+    bitewingMolares: 'bitewingDerecho',
+    bitewingPremolares: 'bitewingIzquierdo',
+    alineadores: 'alteracionesInmediatas',
+    escaneoIntraoral: 'escaneoImpresionDigital',
+    modelosDigitales: 'modelosEstudio3d',
+    bjorks: 'bjork',
+  };
+
   try {
     await client.query('BEGIN');
 
     for (const [fieldName, price] of Object.entries(pricingData)) {
       if (typeof price === 'number' && price >= 0) {
+        // Intentar con el nombre original, si no hay match usar el mapeo inverso
+        const legacyName = uiToLegacy[fieldName] || fieldName;
         await client.query(`
           UPDATE laboratory_service_prices
           SET
@@ -317,7 +375,7 @@ const updateRadiografiasPricingBulk = async (pricingData, userId) => {
             user_id_modification = $2,
             date_time_modification = NOW()
           WHERE legacy_field_name = $3 AND service_category = 'radiografias'
-        `, [price, userId, fieldName]);
+        `, [price, userId, legacyName]);
       }
     }
 

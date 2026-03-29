@@ -158,7 +158,7 @@ const getPatientIntegralConsultations = async (patientId) => {
       const evolutionOdontogramResult = await pool.query(evolutionOdontogramQuery, [consultationId]);
       const evolutionOdontogram = evolutionOdontogramResult.rows;
 
-      // 3. Obtener diagnostico definitivo
+      // 3. Obtener diagnostico definitivo (incluye procedimiento seleccionado)
       const definitiveDiagnosisQuery = `
         SELECT
           ddc.definitive_condition_id,
@@ -169,13 +169,17 @@ const getPatientIntegralConsultations = async (patientId) => {
           ddc.cie10_code,
           ddc.surfaces,
           ddc.price,
+          ddc.procedure_price,
+          ddc.selected_procedure_id,
           ddc.notes,
           tp.tooth_name,
           odc.condition_name,
-          odc.condition_code
+          odc.condition_code,
+          ocp.procedure_name as selected_procedure_name
         FROM definitive_diagnosis_conditions ddc
         LEFT JOIN tooth_positions tp ON ddc.tooth_position_id = tp.tooth_position_id
         LEFT JOIN odontogram_dental_conditions odc ON ddc.dental_condition_id = odc.condition_id
+        LEFT JOIN odontogram_condition_procedures ocp ON ddc.selected_procedure_id = ocp.condition_procedure_id
         WHERE ddc.consultation_id = $1 AND ddc.status = 'active'
         ORDER BY ddc.tooth_number ASC
       `;
