@@ -128,7 +128,13 @@ const getPatientIntegralConsultations = async (patientId) => {
             odc.condition_code as dental_condition_code,
             odc.cie10_code,
             odc.symbol_type,
-            odc.color_type,
+            -- Color: priorizar condition_state del registro sobre el catalogo
+            CASE
+              WHEN oc.condition_state = 'bad' THEN 'red'
+              WHEN oc.condition_state = 'good' THEN 'blue'
+              ELSE odc.color_type
+            END as color_type,
+            oc.condition_state,
             odc.fill_surfaces,
             odc.abbreviation,
             odc.category as condition_category,
