@@ -28,6 +28,18 @@ const getAllAuditLogs = async (filters = {}) => {
     paramIndex++;
   }
 
+  if (filters.record_id) {
+    query += ` AND al.record_id = $${paramIndex}`;
+    params.push(filters.record_id);
+    paramIndex++;
+  }
+
+  if (filters.branch_id) {
+    query += ` AND al.branch_id = $${paramIndex}`;
+    params.push(filters.branch_id);
+    paramIndex++;
+  }
+
   if (filters.date_from) {
     query += ` AND al.timestamp >= $${paramIndex}`;
     params.push(filters.date_from);
@@ -115,6 +127,18 @@ const countAuditLogs = async (filters = {}) => {
     paramIndex++;
   }
 
+  if (filters.record_id) {
+    query += ` AND record_id = $${paramIndex}`;
+    params.push(filters.record_id);
+    paramIndex++;
+  }
+
+  if (filters.branch_id) {
+    query += ` AND branch_id = $${paramIndex}`;
+    params.push(filters.branch_id);
+    paramIndex++;
+  }
+
   if (filters.date_from) {
     query += ` AND timestamp >= $${paramIndex}`;
     params.push(filters.date_from);
@@ -196,7 +220,7 @@ const logAuditEvent = async ({
       user_id,
       action_type,
       table_name,
-      record_id: record_id?.toString() || null,
+      record_id: record_id != null ? Number(record_id) : null,
       old_values: old_values ? JSON.stringify(old_values) : null,
       new_values: enhancedNewValues ? JSON.stringify(enhancedNewValues) : null,
       changed_fields: changed_fields ? JSON.stringify(changed_fields) : null,

@@ -225,106 +225,69 @@ const createPatient = async (patientData) => {
  * @returns {Promise<Object>} Paciente actualizado
  */
 const updatePatient = async (patientId, patientData) => {
-  const {
-    branch_id,
-    company_id,
-    identification_type_id,
-    identification_number,
-    first_name,
-    last_name,
-    birth_date,
-    gender_id,
-    blood_type_id,
-    marital_status_id,
-    email,
-    phone,
-    mobile,
-    address,
-    city,
-    state,
-    country,
-    postal_code,
-    emergency_contact_name,
-    emergency_contact_phone,
-    emergency_contact_relationship,
-    photo_url,
-    occupation,
-    notes,
-    is_basic_registration,
-    completed_at,
-    medical_record_number,
-    user_id_modification,
-    is_new_client
-  } = patientData;
+  const allowedFields = {
+    branch_id: 'branch_id',
+    company_id: 'company_id',
+    identification_type_id: 'identification_type_id',
+    identification_number: 'identification_number',
+    first_name: 'first_name',
+    last_name: 'last_name',
+    birth_date: 'birth_date',
+    gender_id: 'gender_id',
+    blood_type_id: 'blood_type_id',
+    marital_status_id: 'marital_status_id',
+    email: 'email',
+    phone: 'phone',
+    mobile: 'mobile',
+    address: 'address',
+    city: 'city',
+    state: 'state',
+    country: 'country',
+    postal_code: 'postal_code',
+    emergency_contact_name: 'emergency_contact_name',
+    emergency_contact_phone: 'emergency_contact_phone',
+    emergency_contact_relationship: 'emergency_contact_relationship',
+    photo_url: 'photo_url',
+    occupation: 'occupation',
+    notes: 'notes',
+    is_basic_registration: 'is_basic_registration',
+    completed_at: 'completed_at',
+    medical_record_number: 'medical_record_number',
+    is_new_client: 'is_new_client'
+  };
+
+  const setClauses = [];
+  const values = [];
+  let paramIndex = 1;
+
+  for (const [jsKey, dbColumn] of Object.entries(allowedFields)) {
+    if (patientData[jsKey] !== undefined) {
+      setClauses.push(`${dbColumn} = $${paramIndex}`);
+      values.push(patientData[jsKey]);
+      paramIndex++;
+    }
+  }
+
+  // Always update audit fields
+  setClauses.push(`user_id_modification = $${paramIndex}`);
+  values.push(patientData.user_id_modification);
+  paramIndex++;
+
+  setClauses.push(`date_time_modification = CURRENT_TIMESTAMP`);
+
+  if (setClauses.length === 2) {
+    // Only audit fields, nothing to update
+    return await getPatientById(patientId);
+  }
+
+  values.push(patientId);
 
   const query = `
     UPDATE patients SET
-      branch_id = COALESCE($1, branch_id),
-      company_id = NULLIF(COALESCE($2, company_id), 0),
-      identification_type_id = COALESCE($3, identification_type_id),
-      identification_number = COALESCE($4, identification_number),
-      first_name = COALESCE($5, first_name),
-      last_name = COALESCE($6, last_name),
-      birth_date = COALESCE($7, birth_date),
-      gender_id = COALESCE($8, gender_id),
-      blood_type_id = COALESCE($9, blood_type_id),
-      marital_status_id = COALESCE($10, marital_status_id),
-      email = COALESCE($11, email),
-      phone = COALESCE($12, phone),
-      mobile = COALESCE($13, mobile),
-      address = COALESCE($14, address),
-      city = COALESCE($15, city),
-      state = COALESCE($16, state),
-      country = COALESCE($17, country),
-      postal_code = COALESCE($18, postal_code),
-      emergency_contact_name = COALESCE($19, emergency_contact_name),
-      emergency_contact_phone = COALESCE($20, emergency_contact_phone),
-      emergency_contact_relationship = COALESCE($21, emergency_contact_relationship),
-      photo_url = COALESCE($22, photo_url),
-      occupation = COALESCE($23, occupation),
-      notes = COALESCE($24, notes),
-      is_basic_registration = COALESCE($25, is_basic_registration),
-      completed_at = COALESCE($26, completed_at),
-      medical_record_number = COALESCE($27, medical_record_number),
-      user_id_modification = $28,
-      is_new_client = COALESCE($29, is_new_client),
-      date_time_modification = CURRENT_TIMESTAMP
-    WHERE patient_id = $30 AND status = 'active'
+      ${setClauses.join(',\n      ')}
+    WHERE patient_id = $${paramIndex} AND status = 'active'
     RETURNING *
   `;
-
-  const values = [
-    branch_id,
-    company_id,
-    identification_type_id,
-    identification_number,
-    first_name,
-    last_name,
-    birth_date,
-    gender_id,
-    blood_type_id,
-    marital_status_id,
-    email,
-    phone,
-    mobile,
-    address,
-    city,
-    state,
-    country,
-    postal_code,
-    emergency_contact_name,
-    emergency_contact_phone,
-    emergency_contact_relationship,
-    photo_url,
-    occupation,
-    notes,
-    is_basic_registration,
-    completed_at,
-    medical_record_number,
-    user_id_modification,
-    is_new_client,
-    patientId
-  ];
 
   const result = await pool.query(query, values);
   return result.rows.length > 0 ? result.rows[0] : null;

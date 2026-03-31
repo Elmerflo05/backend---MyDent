@@ -8,10 +8,14 @@ const {
   countPatients
 } = require('../models/patientsModel');
 const {
-  getPatientIntegralConsultations
+  getPatientIntegralConsultations,
+  getPatientMedicalSummary,
+  getPatientMedicalBackground,
+  getPatientLaboratoryRadiographyRequests
 } = require('../models/patientPortalModel');
 const bcrypt = require('bcrypt');
 const pool = require('../config/db');
+const { logAuditEvent, calculateChanges, AUDIT_ACTIONS } = require('../models/auditLogsModel');
 
 const PATIENT_ROLE_ID = 6;
 const SALT_ROUNDS = 10;
@@ -193,6 +197,26 @@ const createNewPatient = async (req, res) => {
     if (!hasEmail) {
       // Si no tiene email, crear solo el paciente
       const newPatient = await createPatient(patientData);
+
+      // Audit log - Patient created
+      logAuditEvent({
+        user_id: req.user.user_id,
+        action_type: AUDIT_ACTIONS.CREATE,
+        table_name: 'patients',
+        record_id: newPatient.patient_id,
+        new_values: {
+          first_name: newPatient.first_name,
+          last_name: newPatient.last_name,
+          identification_number: newPatient.identification_number,
+          email: newPatient.email,
+          company_id: newPatient.company_id
+        },
+        branch_id: req.user.branch_id || null,
+        ip_address: req.ip || req.connection?.remoteAddress,
+        user_agent: req.get('User-Agent'),
+        description: `Paciente creado: ${newPatient.first_name} ${newPatient.last_name}`
+      });
+
       return res.status(201).json({
         success: true,
         message: 'Paciente creado exitosamente',
@@ -331,6 +355,27 @@ const createNewPatient = async (req, res) => {
 
     const newPatient = patientResult.rows[0];
 
+    // Audit log - Patient created with user
+    logAuditEvent({
+      user_id: req.user.user_id,
+      action_type: AUDIT_ACTIONS.CREATE,
+      table_name: 'patients',
+      record_id: newPatient.patient_id,
+      new_values: {
+        first_name: newPatient.first_name,
+        last_name: newPatient.last_name,
+        identification_number: newPatient.identification_number,
+        email: newPatient.email,
+        company_id: newPatient.company_id,
+        user_created: userCheck.rows.length === 0,
+        linked_user_id: userId
+      },
+      branch_id: req.user.branch_id || null,
+      ip_address: req.ip || req.connection?.remoteAddress,
+      user_agent: req.get('User-Agent'),
+      description: `Paciente creado con usuario: ${newPatient.first_name} ${newPatient.last_name}`
+    });
+
     // Determinar el mensaje segun si se uso contraseña personalizada o temporal
     let message = '';
     if (userCheck.rows.length > 0) {
@@ -384,17 +429,48 @@ const createNewPatient = async (req, res) => {
 const updateExistingPatient = async (req, res) => {
   try {
     const { id } = req.params;
+    const patientId = parseInt(id);
+
+    // Read old state BEFORE updating (for audit trail)
+    const oldPatient = await getPatientById(patientId);
+    if (!oldPatient) {
+      return res.status(404).json({ success: false, error: 'Paciente no encontrado' });
+    }
+
     const patientData = {
       ...req.body,
       user_id_modification: req.user.user_id
     };
 
-    const updatedPatient = await updatePatient(parseInt(id), patientData);
+    const updatedPatient = await updatePatient(patientId, patientData);
 
     if (!updatedPatient) {
-      return res.status(404).json({
-        success: false,
-        error: 'Paciente no encontrado'
+      return res.status(404).json({ success: false, error: 'Paciente no encontrado' });
+    }
+
+    // Calculate changes and log audit
+    const fieldsToTrack = [
+      'first_name', 'last_name', 'identification_number', 'email', 'phone', 'mobile',
+      'address', 'city', 'state', 'country', 'postal_code', 'occupation', 'notes',
+      'company_id', 'branch_id', 'gender_id', 'blood_type_id', 'marital_status_id',
+      'emergency_contact_name', 'emergency_contact_phone', 'emergency_contact_relationship',
+      'is_basic_registration', 'is_new_client', 'photo_url'
+    ];
+    const changes = calculateChanges(oldPatient, updatedPatient, fieldsToTrack);
+
+    if (changes) {
+      logAuditEvent({
+        user_id: req.user.user_id,
+        action_type: AUDIT_ACTIONS.UPDATE,
+        table_name: 'patients',
+        record_id: patientId,
+        old_values: Object.fromEntries(Object.entries(changes).map(([k, v]) => [k, v.old])),
+        new_values: Object.fromEntries(Object.entries(changes).map(([k, v]) => [k, v.new])),
+        changed_fields: changes,
+        branch_id: req.user.branch_id || null,
+        ip_address: req.ip || req.connection?.remoteAddress,
+        user_agent: req.get('User-Agent'),
+        description: `Paciente actualizado: ${updatedPatient.first_name} ${updatedPatient.last_name} - Campos: ${Object.keys(changes).join(', ')}`
       });
     }
 
@@ -405,18 +481,13 @@ const updateExistingPatient = async (req, res) => {
     });
   } catch (error) {
     console.error('Error al actualizar paciente:', error);
-
     if (error.code === '23505') {
       return res.status(409).json({
         success: false,
         error: 'Ya existe un paciente con ese número de identificación'
       });
     }
-
-    res.status(500).json({
-      success: false,
-      error: 'Error al actualizar paciente'
-    });
+    res.status(500).json({ success: false, error: 'Error al actualizar paciente' });
   }
 };
 
@@ -426,25 +497,43 @@ const updateExistingPatient = async (req, res) => {
 const deleteExistingPatient = async (req, res) => {
   try {
     const { id } = req.params;
-    const deleted = await deletePatient(parseInt(id), req.user.user_id);
+    const patientId = parseInt(id);
+
+    // Read data before delete for audit
+    const oldPatient = await getPatientById(patientId);
+
+    const deleted = await deletePatient(patientId, req.user.user_id);
 
     if (!deleted) {
-      return res.status(404).json({
-        success: false,
-        error: 'Paciente no encontrado'
+      return res.status(404).json({ success: false, error: 'Paciente no encontrado' });
+    }
+
+    // Audit log
+    if (oldPatient) {
+      logAuditEvent({
+        user_id: req.user.user_id,
+        action_type: AUDIT_ACTIONS.DELETE,
+        table_name: 'patients',
+        record_id: patientId,
+        old_values: {
+          first_name: oldPatient.first_name,
+          last_name: oldPatient.last_name,
+          identification_number: oldPatient.identification_number,
+          email: oldPatient.email,
+          status: 'active'
+        },
+        new_values: { status: 'inactive' },
+        branch_id: req.user.branch_id || null,
+        ip_address: req.ip || req.connection?.remoteAddress,
+        user_agent: req.get('User-Agent'),
+        description: `Paciente eliminado: ${oldPatient.first_name} ${oldPatient.last_name}`
       });
     }
 
-    res.json({
-      success: true,
-      message: 'Paciente eliminado exitosamente'
-    });
+    res.json({ success: true, message: 'Paciente eliminado exitosamente' });
   } catch (error) {
     console.error('Error al eliminar paciente:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Error al eliminar paciente'
-    });
+    res.status(500).json({ success: false, error: 'Error al eliminar paciente' });
   }
 };
 
@@ -1115,6 +1204,53 @@ const searchPatientByDni = async (req, res) => {
   }
 };
 
+/**
+ * SA Only: Obtener historial integral COMPLETO de un paciente
+ * Reutiliza getPatientIntegralConsultations del portal del paciente
+ * Incluye: consultas con todos los pasos (10), resumen, antecedentes
+ */
+const getPatientFullIntegralHistory = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const patientId = parseInt(id);
+
+    if (isNaN(patientId)) {
+      return res.status(400).json({ success: false, error: 'ID de paciente inválido' });
+    }
+
+    const patient = await getPatientById(patientId);
+    if (!patient) {
+      return res.status(404).json({ success: false, error: 'Paciente no encontrado' });
+    }
+
+    const [consultations, summary, medicalBackground, labRadiographyRequests] = await Promise.all([
+      getPatientIntegralConsultations(patientId),
+      getPatientMedicalSummary(patientId),
+      getPatientMedicalBackground(patientId),
+      getPatientLaboratoryRadiographyRequests(patientId)
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        patient: {
+          patient_id: patient.patient_id,
+          first_name: patient.first_name,
+          last_name: patient.last_name,
+          identification_number: patient.identification_number
+        },
+        consultations: consultations || [],
+        summary: summary || null,
+        medical_background: medicalBackground || null,
+        laboratory_radiography_requests: labRadiographyRequests || []
+      }
+    });
+  } catch (error) {
+    console.error('Error al obtener historial integral del paciente:', error);
+    res.status(500).json({ success: false, error: 'Error al obtener historial integral' });
+  }
+};
+
 module.exports = {
   getPatients,
   getPatient,
@@ -1124,5 +1260,6 @@ module.exports = {
   updateExistingPatient,
   deleteExistingPatient,
   getAccessiblePatients,
-  searchPatientByDni
+  searchPatientByDni,
+  getPatientFullIntegralHistory
 };

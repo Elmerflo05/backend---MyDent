@@ -355,19 +355,39 @@ const createNewAppointment = async (req, res) => {
 
     if (!isFirstFreeConsultation) {
       // SIEMPRE verificar en BD - nunca confiar solo en el flag del frontend
+      // Criterios de paciente continuador (cualquiera de estos):
+      //   1. Tiene citas completadas/atendidas (status 3 o 4)
+      //   2. Tiene tratamiento registrado (atención integral): consulta con plan de tratamiento
+      //   3. Marcado manualmente como continuador por SA (patients.is_new_client = false)
       try {
-        const completedCheck = await pool.query(
-          `SELECT COUNT(*) as count FROM appointments
-           WHERE patient_id = $1 AND appointment_status_id IN (3, 4) AND status = 'active'`,
+        const continuadorCheck = await pool.query(
+          `SELECT
+            (SELECT COUNT(*) FROM appointments
+             WHERE patient_id = $1 AND appointment_status_id IN (3, 4) AND status = 'active'
+            ) AS completed_appointments,
+            (SELECT COUNT(*) FROM consultations c
+             INNER JOIN consultation_treatment_plans ctp ON ctp.consultation_id = c.consultation_id
+             WHERE c.patient_id = $1 AND c.status = 'active' AND ctp.status = 'active'
+            ) AS treatment_plans,
+            (SELECT CASE WHEN is_new_client = false THEN 1 ELSE 0 END
+             FROM patients WHERE patient_id = $1 AND status = 'active'
+            ) AS manually_marked`,
           [patientId]
         );
-        if (parseInt(completedCheck.rows[0].count) > 0) {
+        const hasCompletedAppointments = parseInt(continuadorCheck.rows[0].completed_appointments) > 0;
+        const hasTreatmentPlans = parseInt(continuadorCheck.rows[0].treatment_plans) > 0;
+        const manuallyMarked = parseInt(continuadorCheck.rows[0].manually_marked) === 1;
+
+        if (hasCompletedAppointments || hasTreatmentPlans || manuallyMarked) {
           isContinuingPatient = true;
           appointmentPrice = 0;
-          console.log(`Paciente continuador #${patientId} (verificado en BD) - Sin cobro de cita`);
+          const reason = hasCompletedAppointments ? 'citas completadas'
+            : hasTreatmentPlans ? 'tratamiento registrado (atención integral)'
+            : 'marcado manualmente por administrador';
+          console.log(`Paciente continuador #${patientId} (verificado en BD: ${reason}) - Sin cobro de cita`);
         } else if (req.body.is_continuing_patient === true) {
           // Frontend dice continuador pero BD no lo confirma - ignorar flag
-          console.warn(`ALERTA: Frontend envió is_continuing_patient=true para paciente #${patientId} pero no tiene citas completadas en BD. Ignorando flag.`);
+          console.warn(`ALERTA: Frontend envió is_continuing_patient=true para paciente #${patientId} pero no tiene citas completadas, tratamientos ni marca manual en BD. Ignorando flag.`);
         }
       } catch (contError) {
         console.log('Info: Error verificando estado de continuador:', contError.message);

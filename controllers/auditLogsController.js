@@ -8,7 +8,7 @@ const pool = require('../config/db');
 
 const getAuditLogs = async (req, res) => {
   try {
-    const { user_id, action_type, table_name, date_from, date_to, search, page = 1, limit = 50 } = req.query;
+    const { user_id, action_type, table_name, record_id, date_from, date_to, search, page = 1, limit = 50 } = req.query;
 
     // Si es admin (no super_admin), solo puede ver logs de su sede
     const branchFilter = req.user.role_id === 2 ? req.user.branch_id : null;
@@ -17,6 +17,8 @@ const getAuditLogs = async (req, res) => {
       user_id: user_id ? parseInt(user_id) : null,
       action_type,
       table_name,
+      record_id: record_id ? parseInt(record_id) : null,
+      branch_id: branchFilter,
       date_from,
       date_to,
       limit: Math.min(parseInt(limit), 100), // Máximo 100 registros

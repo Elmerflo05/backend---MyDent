@@ -14,6 +14,7 @@
  */
 
 const consultationBudgetsModel = require('../models/consultationBudgetsModel');
+const notificationsModel = require('../models/notificationsModel');
 const {
   validatePromotion,
   calculateDiscount,
@@ -216,6 +217,68 @@ const upsertConsultationBudget = async (req, res) => {
       } catch (updateError) {
         // Log pero no fallar - el uso ya está registrado
         console.error('Error al actualizar consultation_budget_id en promotion_usage:', updateError);
+      }
+    }
+
+    // Crear notificación para el paciente
+    if (budget) {
+      try {
+        const consultationResult = await pool.query(
+          `SELECT c.patient_id, CONCAT(u.first_name, ' ', u.last_name) as dentist_name
+           FROM consultations c
+           LEFT JOIN dentists d ON c.dentist_id = d.dentist_id
+           LEFT JOIN users u ON d.user_id = u.user_id
+           WHERE c.consultation_id = $1`,
+          [parseInt(consultationId)]
+        );
+        const patientId = consultationResult.rows[0]?.patient_id;
+        const dentistName = consultationResult.rows[0]?.dentist_name || 'Tu doctor';
+
+        if (patientId) {
+          // Invalidar notificaciones previas de presupuesto para esta consulta
+          await pool.query(
+            `UPDATE notifications SET status = 'inactive', date_time_modification = CURRENT_TIMESTAMP
+             WHERE patient_id = $1 AND notification_type IN ('budget_created', 'budget_updated')
+             AND status = 'active' AND is_read = false
+             AND notification_data->>'consultation_id' = $2`,
+            [patientId, String(consultationId)]
+          );
+
+          const grandTotal = parseFloat(budget.grand_total || 0);
+          const notificationType = existedBefore ? 'budget_updated' : 'budget_created';
+          const notificationTitle = existedBefore ? 'Presupuesto Actualizado' : 'Nuevo Presupuesto Disponible';
+          const notificationMessage = `${dentistName} ha ${existedBefore ? 'actualizado' : 'registrado'} tu presupuesto. Total: S/ ${grandTotal.toFixed(2)}`;
+          const notificationDataPayload = {
+            consultation_id: parseInt(consultationId),
+            consultation_budget_id: budget.consultation_budget_id,
+            grand_total: grandTotal,
+            status: budget.status
+          };
+
+          const createdNotification = await notificationsModel.createNotification({
+            patient_id: patientId,
+            notification_type: notificationType,
+            notification_title: notificationTitle,
+            notification_message: notificationMessage,
+            notification_data: JSON.stringify(notificationDataPayload),
+            priority: 'high',
+            user_id_registration: userId
+          });
+
+          // Emitir evento Socket.IO al paciente en tiempo real
+          if (global.io && createdNotification) {
+            global.io.to(`patient-${patientId}`).emit('budget-notification', {
+              notification_id: createdNotification.notification_id,
+              notification_type: notificationType,
+              notification_title: notificationTitle,
+              notification_message: notificationMessage,
+              notification_data: notificationDataPayload,
+              date_time_registration: createdNotification.date_time_registration
+            });
+          }
+        }
+      } catch (notifError) {
+        console.error('Error al crear notificación de presupuesto:', notifError);
       }
     }
 

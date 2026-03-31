@@ -18,22 +18,34 @@
 const pool = require('../config/db');
 
 /**
- * Verifica si un paciente es cliente nuevo (sin citas completadas)
+ * Verifica si un paciente es cliente nuevo
+ * Criterios de continuador (cualquiera de estos):
+ *   1. Tiene citas completadas/atendidas (appointment_status_id 3 o 4)
+ *   2. Tiene tratamiento registrado (atención integral): consulta con plan de tratamiento
+ *   3. Marcado manualmente como continuador por SA (patients.is_new_client = false)
  * @param {number} patientId - ID del paciente
- * @returns {Promise<boolean>} true si es nuevo (sin citas completadas), false si es continuador
+ * @returns {Promise<boolean>} true si es nuevo, false si es continuador
  */
 const checkIfNewClient = async (patientId) => {
   try {
     const query = `
-      SELECT COUNT(*) as completed_count
-      FROM appointments
-      WHERE patient_id = $1
-      AND status = 'active'
-      AND appointment_status_id IN (3, 4)
+      SELECT
+        (SELECT COUNT(*) FROM appointments
+         WHERE patient_id = $1 AND appointment_status_id IN (3, 4) AND status = 'active'
+        ) AS completed_appointments,
+        (SELECT COUNT(*) FROM consultations c
+         INNER JOIN consultation_treatment_plans ctp ON ctp.consultation_id = c.consultation_id
+         WHERE c.patient_id = $1 AND c.status = 'active' AND ctp.status = 'active'
+        ) AS treatment_plans,
+        (SELECT CASE WHEN is_new_client = false THEN 1 ELSE 0 END
+         FROM patients WHERE patient_id = $1 AND status = 'active'
+        ) AS manually_marked
     `;
-    // appointment_status_id: 3 = En Proceso (attended), 4 = Completada (completed)
     const result = await pool.query(query, [patientId]);
-    return parseInt(result.rows[0].completed_count) === 0;
+    const hasCompletedAppointments = parseInt(result.rows[0].completed_appointments) > 0;
+    const hasTreatmentPlans = parseInt(result.rows[0].treatment_plans) > 0;
+    const manuallyMarked = parseInt(result.rows[0].manually_marked) === 1;
+    return !hasCompletedAppointments && !hasTreatmentPlans && !manuallyMarked;
   } catch (error) {
     console.error('Error checking if new client:', error);
     // Por defecto, considerar como nuevo si hay error

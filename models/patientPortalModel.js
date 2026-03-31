@@ -93,10 +93,13 @@ const getPatientIntegralConsultations = async (patientId) => {
             oc.tooth_position_id,
             oc.tooth_surface_id,
             oc.dental_condition_id,
+            oc.connected_tooth_position_id,
             oc.description,
             oc.severity,
             oc.notes,
-            -- Precio: usar el del procedimiento (FUENTE ÚNICA), con fallback
+            oc.price as custom_tooth_price,
+            oc.surface_section,
+            -- Precio: usar el del procedimiento (FUENTE UNICA)
             COALESCE(
               (
                 SELECT ocp_price.price_without_plan
@@ -109,22 +112,42 @@ const getPatientIntegralConsultations = async (patientId) => {
               oc.price,
               0
             ) as price,
-            oc.surface_section,
-            tp.tooth_number,
+            -- Tooth number con formato "X.Y"
+            CASE
+              WHEN LENGTH(tp.tooth_number) = 2
+              THEN SUBSTRING(tp.tooth_number, 1, 1) || '.' || SUBSTRING(tp.tooth_number, 2, 1)
+              ELSE tp.tooth_number
+            END as tooth_number,
             tp.tooth_name,
+            tp.quadrant,
+            tp.tooth_type,
+            tp.is_adult,
+            -- Condicion dental
             odc.condition_name,
             odc.condition_code,
+            odc.condition_code as dental_condition_code,
             odc.cie10_code,
             odc.symbol_type,
             odc.color_type,
+            odc.fill_surfaces,
+            odc.abbreviation,
+            odc.category as condition_category,
+            -- Superficie
             ts.surface_code,
-            ts.surface_name
+            ts.surface_name,
+            -- Diente conectado (protesis, aparatos)
+            CASE
+              WHEN LENGTH(ctp.tooth_number) = 2
+              THEN SUBSTRING(ctp.tooth_number, 1, 1) || '.' || SUBSTRING(ctp.tooth_number, 2, 1)
+              ELSE ctp.tooth_number
+            END as connected_tooth_number
           FROM odontogram_conditions oc
           INNER JOIN tooth_positions tp ON oc.tooth_position_id = tp.tooth_position_id
           LEFT JOIN odontogram_dental_conditions odc ON oc.dental_condition_id = odc.condition_id
           LEFT JOIN tooth_surfaces ts ON oc.tooth_surface_id = ts.tooth_surface_id
+          LEFT JOIN tooth_positions ctp ON oc.connected_tooth_position_id = ctp.tooth_position_id
           WHERE oc.odontogram_id = $1 AND oc.status = 'active'
-          ORDER BY tp.tooth_number ASC
+          ORDER BY tp.tooth_number ASC, oc.condition_id ASC
         `;
         const conditionsResult = await pool.query(conditionsQuery, [odontogram.odontogram_id]);
         odontogramConditions = conditionsResult.rows;
