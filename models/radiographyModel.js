@@ -244,7 +244,9 @@ const updateRadiographyRequest = async (requestId, requestData) => {
 };
 
 /**
- * Busca solicitud de radiografía por consultation_id
+ * Busca la última solicitud de radiografía activa por consultation_id
+ * Ordenada por date_time_registration DESC (timestamp preciso del servidor)
+ * con fallback al id para casos con NULL.
  */
 const findByConsultationId = async (consultationId) => {
   if (!consultationId) return null;
@@ -252,7 +254,7 @@ const findByConsultationId = async (consultationId) => {
   const query = `
     SELECT * FROM radiography_requests
     WHERE consultation_id = $1 AND status = 'active'
-    ORDER BY radiography_request_id DESC
+    ORDER BY date_time_registration DESC NULLS LAST, radiography_request_id DESC
     LIMIT 1
   `;
 
@@ -279,9 +281,19 @@ const findByAppointmentId = async (appointmentId) => {
 };
 
 /**
- * Upsert de solicitud de radiografía:
- * Si existe una solicitud con el mismo consultation_id, la actualiza.
- * Si no existe, crea una nueva.
+ * Estados considerados "editables" por el doctor:
+ * Si la última solicitud activa está en uno de estos estados, el siguiente
+ * Guardar ACTUALIZA. En cualquier otro estado, CREA una solicitud nueva.
+ * Regla del negocio: mientras el técnico no haya tocado la solicitud (pending),
+ * el doctor puede seguir refinando; una vez procesada, el siguiente save es otra intención.
+ */
+const EDITABLE_REQUEST_STATUSES = ['pending'];
+
+/**
+ * Upsert de solicitud de radiografía (lógica server-side):
+ * - Busca la última solicitud activa del consultation_id (o appointment_id).
+ * - Si existe y su request_status es editable ('pending') → UPDATE.
+ * - En cualquier otro caso (no existe, o ya fue procesada) → INSERT nuevo registro.
  */
 const upsertRadiographyRequest = async (requestData) => {
   const {
@@ -313,7 +325,9 @@ const upsertRadiographyRequest = async (requestData) => {
     existingRequest = await findByAppointmentId(appointment_id);
   }
 
-  if (existingRequest) {
+  const isEditable = existingRequest && EDITABLE_REQUEST_STATUSES.includes(existingRequest.request_status);
+
+  if (isEditable) {
     // Actualizar solicitud existente
     const updateQuery = `
       UPDATE radiography_requests SET
@@ -377,8 +391,38 @@ const upsertRadiographyRequest = async (requestData) => {
   return { ...result.rows[0], wasUpdated: false };
 };
 
+/**
+ * Estados permitidos para eliminación (soft-delete).
+ * Solo solicitudes aún no tocadas por el técnico pueden borrarse.
+ */
+const DELETABLE_REQUEST_STATUSES = ['pending'];
+
+/**
+ * Soft-delete de una solicitud de radiografía.
+ * Devuelve un objeto con el resultado:
+ *   - { ok: true } si se eliminó.
+ *   - { ok: false, reason: 'not_found' } si no existe o ya estaba inactiva.
+ *   - { ok: false, reason: 'not_deletable', currentStatus } si existe pero no está en un estado permitido.
+ */
 const deleteRadiographyRequest = async (requestId, userId) => {
-  const query = `
+  const checkQuery = `
+    SELECT radiography_request_id, request_status
+    FROM radiography_requests
+    WHERE radiography_request_id = $1 AND status = 'active'
+  `;
+  const checkResult = await pool.query(checkQuery, [requestId]);
+
+  if (checkResult.rowCount === 0) {
+    return { ok: false, reason: 'not_found' };
+  }
+
+  const currentStatus = checkResult.rows[0].request_status;
+
+  if (!DELETABLE_REQUEST_STATUSES.includes(currentStatus)) {
+    return { ok: false, reason: 'not_deletable', currentStatus };
+  }
+
+  const updateQuery = `
     UPDATE radiography_requests SET
       status = 'inactive',
       user_id_modification = $1,
@@ -387,8 +431,8 @@ const deleteRadiographyRequest = async (requestId, userId) => {
     RETURNING radiography_request_id
   `;
 
-  const result = await pool.query(query, [userId, requestId]);
-  return result.rowCount > 0;
+  const result = await pool.query(updateQuery, [userId, requestId]);
+  return result.rowCount > 0 ? { ok: true } : { ok: false, reason: 'not_found' };
 };
 
 const countRadiographyRequests = async (filters = {}) => {

@@ -271,18 +271,33 @@ const updateExistingRadiographyRequest = async (req, res) => {
 const deleteExistingRadiographyRequest = async (req, res) => {
   try {
     const { id } = req.params;
-    const deleted = await deleteRadiographyRequest(parseInt(id), req.user.user_id);
+    const result = await deleteRadiographyRequest(parseInt(id), req.user.user_id);
 
-    if (!deleted) {
+    if (result.ok) {
+      return res.json({
+        success: true,
+        message: 'Solicitud de radiografía eliminada exitosamente'
+      });
+    }
+
+    if (result.reason === 'not_found') {
       return res.status(404).json({
         success: false,
         error: 'Solicitud de radiografía no encontrada'
       });
     }
 
-    res.json({
-      success: true,
-      message: 'Solicitud de radiografía eliminada exitosamente'
+    if (result.reason === 'not_deletable') {
+      return res.status(409).json({
+        success: false,
+        error: 'Solo se pueden eliminar solicitudes en estado pendiente',
+        currentStatus: result.currentStatus
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: 'No se pudo eliminar la solicitud'
     });
   } catch (error) {
     console.error('Error al eliminar solicitud de radiografía:', error);
