@@ -6,7 +6,6 @@ const {
   getUser,
   createNewUser,
   updateExistingUser,
-  changePassword,
   deleteExistingUser,
   getAvailableAdmins
 } = require('../controllers/usersController');
@@ -30,7 +29,6 @@ router.get('/', getUsers);
 router.get('/:id', getUser);
 router.post('/', createNewUser);
 router.put('/:id', updateExistingUser);
-router.put('/:id/password', changePassword);
 router.delete('/:id', deleteExistingUser);
 
 module.exports = router;

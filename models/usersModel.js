@@ -313,22 +313,6 @@ const updateUser = async (userId, userData) => {
   }
 };
 
-const updatePassword = async (userId, newPasswordHash, modifiedBy) => {
-  const query = `
-    UPDATE users SET
-      password_hash = $1,
-      password_changed_at = CURRENT_TIMESTAMP,
-      must_change_password = false,
-      user_id_modification = $2,
-      date_time_modification = CURRENT_TIMESTAMP
-    WHERE user_id = $3 AND status != 'deleted'
-    RETURNING user_id
-  `;
-
-  const result = await pool.query(query, [newPasswordHash, modifiedBy, userId]);
-  return result.rowCount > 0;
-};
-
 const deleteUser = async (userId, modifiedBy) => {
   const query = `
     UPDATE users SET
@@ -391,7 +375,6 @@ module.exports = {
   getUserById,
   createUser,
   updateUser,
-  updatePassword,
   deleteUser,
   getAvailableAdministrators
 };

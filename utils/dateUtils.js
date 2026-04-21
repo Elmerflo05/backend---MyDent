@@ -92,10 +92,29 @@ const endOfDay = (date) => {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
 };
 
+/**
+ * Formatea la hora actual (o dada) como HH:MM:SS en zona horaria Lima
+ * Garantiza comportamiento idéntico en entornos locales y en Railway (UTC).
+ *
+ * @param {Date} [date=new Date()] - Fecha/hora a formatear
+ * @returns {string} Hora en formato HH:MM:SS (24h) en zona Lima
+ */
+const formatTimeHMS = (date = new Date()) => {
+  const d = date instanceof Date ? date : new Date(date);
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: TIMEZONE_LIMA,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).format(d);
+};
+
 module.exports = {
   formatDateYMD,
   parseLocalDate,
   isSameDay,
   startOfDay,
-  endOfDay
+  endOfDay,
+  formatTimeHMS
 };

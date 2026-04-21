@@ -990,9 +990,11 @@ const changeOwnPassword = async (req, res) => {
     const user = userResult.rows[0];
 
     // Verificar contraseña actual
+    // Se retorna 400 (no 401) porque un 401 dispara el flujo de sesión expirada
+    // del httpClient del frontend y cierra la sesión del usuario.
     const isCurrentPasswordValid = await bcrypt.compare(current_password, user.password_hash);
     if (!isCurrentPasswordValid) {
-      return res.status(401).json({
+      return res.status(400).json({
         success: false,
         error: 'La contraseña actual es incorrecta'
       });

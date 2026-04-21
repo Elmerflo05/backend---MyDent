@@ -137,6 +137,8 @@ const upsertConsultationTreatmentPlan = async (consultationId, data, userId) => 
 
     // Calcular totales desde la BD si el frontend no los envía
     // 1. Total del diagnóstico definitivo (desde definitive_diagnosis_conditions)
+    //    price y procedure_price quedan sincronizados al guardar; el CASE es red
+    //    de compatibilidad para registros legacy anteriores a la invariante.
     let definitiveConditionsTotal = data.definitiveConditionsTotal || 0;
     if (!definitiveConditionsTotal || definitiveConditionsTotal === 0) {
       const ddcTotalResult = await client.query(`

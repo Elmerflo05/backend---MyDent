@@ -1175,6 +1175,15 @@ const saveDefinitiveDiagnosisConditions = async (consultationId, conditions, use
         RETURNING *
       `;
 
+      // Invariante: si hay precio de procedimiento seleccionado, price debe coincidir.
+      // Protege ante clientes desactualizados que envían price stale.
+      const procPrice = (condition.procedure_price !== undefined && condition.procedure_price !== null)
+        ? Number(condition.procedure_price)
+        : null;
+      const persistedPrice = procPrice !== null && Number.isFinite(procPrice)
+        ? procPrice
+        : (condition.price || 0);
+
       const values = [
         consultationId,
         condition.presumptive_condition_id || null,
@@ -1186,13 +1195,13 @@ const saveDefinitiveDiagnosisConditions = async (consultationId, conditions, use
         condition.condition_label,
         condition.cie10_code || null,
         condition.surfaces ? JSON.stringify(condition.surfaces) : '[]',
-        condition.price || 0,
+        persistedPrice,
         condition.notes || null,
         condition.is_modified_from_presumptive || false,
         condition.modification_reason || null,
         userId,
         condition.selected_procedure_id || null,
-        condition.procedure_price || null
+        procPrice
       ];
 
       const result = await client.query(query, values);
@@ -1235,6 +1244,10 @@ const saveDefinitiveDiagnosisConditions = async (consultationId, conditions, use
 /**
  * Obtiene el resumen del diagnóstico definitivo con totales
  * @param {number} consultationId - ID de la consulta
+ *
+ * Nota: price y procedure_price quedan sincronizados al guardar (ver saveDefinitiveDiagnosisConditions
+ * y updateSelectedProcedure). El CASE se mantiene como red de compatibilidad para registros legacy
+ * anteriores a la invariante — así datos antiguos siguen reportando el monto efectivo.
  */
 const getDefinitiveDiagnosisSummary = async (consultationId) => {
   const query = `

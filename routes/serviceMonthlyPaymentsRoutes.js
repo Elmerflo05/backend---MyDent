@@ -1,7 +1,7 @@
 /**
  * Routes: serviceMonthlyPaymentsRoutes.js
- * Rutas para pagos mensuales recurrentes de servicios adicionales
- * (ortodoncia e implantes)
+ * Rutas para pagos fraccionados de servicios adicionales
+ * (ortodoncia, implantes y prótesis)
  *
  * Base path: /api/service-monthly-payments
  */
@@ -74,6 +74,27 @@ router.get('/count/:serviceId', verificarToken, serviceMonthlyPaymentsController
  * @param   patientId - ID del paciente
  */
 router.get('/patient/:patientId', verificarToken, serviceMonthlyPaymentsController.getPaymentsByPatient);
+
+/**
+ * @route   GET /api/service-monthly-payments/patient/:patientId/statement
+ * @desc    Estado de cuenta consolidado: servicios adicionales con presupuesto, saldo y pagos
+ * @access  Private (consumido por paciente, admin, SA y recepción)
+ * @param   patientId - ID del paciente
+ * @returns {
+ *            services: [{
+ *              consultation_additional_service_id, service_type, service_name, service_status,
+ *              expected_total, initial_expected, monthly_expected,
+ *              total_paid, remaining_balance, progress_percent,
+ *              is_fully_paid, is_completed, last_payment_date,
+ *              payments: [...]
+ *            }],
+ *            aggregate: {
+ *              expected_total, total_paid, remaining_balance,
+ *              services_count, in_progress_count, completed_count, pending_count
+ *            }
+ *          }
+ */
+router.get('/patient/:patientId/statement', verificarToken, serviceMonthlyPaymentsController.getPatientAccountStatement);
 
 /**
  * @route   GET /api/service-monthly-payments/dentist/:dentistId

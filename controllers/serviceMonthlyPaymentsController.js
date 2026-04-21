@@ -1,15 +1,49 @@
 /**
  * Controller: serviceMonthlyPaymentsController.js
- * Controlador para pagos mensuales recurrentes de servicios adicionales
- * (ortodoncia e implantes)
+ * Controlador para pagos fraccionados de servicios adicionales
+ * (ortodoncia, implantes y prótesis)
  */
 
-const { formatDateYMD } = require('../utils/dateUtils');
+const { formatDateYMD, formatTimeHMS } = require('../utils/dateUtils');
 const serviceMonthlyPaymentsModel = require('../models/serviceMonthlyPaymentsModel');
-const procedureIncomeModel = require('../models/procedureIncomeModel');
+
+const SUPPORTED_SERVICE_TYPES = ['orthodontic', 'implant', 'prosthesis'];
+const SUPPORTED_PAYMENT_TYPES = ['initial', 'monthly'];
 
 /**
- * Registrar un nuevo pago mensual
+ * Construye el summary con saldo, total esperado y progreso a partir del estado crudo del servicio.
+ * Sin hardcodeos: todos los valores vienen de consultation_additional_services y los pagos reales.
+ */
+const buildSummary = (service, payments) => {
+  const expectedTotal = Number(service.edited_monto_total || service.original_monto_total || 0);
+  const initialExpected = Number(service.edited_inicial || service.original_inicial || 0);
+  const monthlyExpected = Number(service.edited_mensual || service.original_mensual || 0);
+
+  const initialPayments = payments.filter(p => p.payment_type === 'initial');
+  const monthlyPayments = payments.filter(p => p.payment_type === 'monthly');
+  const totalPaid = payments.reduce((sum, p) => sum + Number(p.payment_amount || 0), 0);
+  const remainingBalance = Math.max(expectedTotal - totalPaid, 0);
+  const progressPercent = expectedTotal > 0
+    ? Math.min(100, Math.round((totalPaid / expectedTotal) * 10000) / 100)
+    : 0;
+
+  return {
+    expected_total: Number(expectedTotal.toFixed(2)),
+    initial_expected: Number(initialExpected.toFixed(2)),
+    monthly_expected: Number(monthlyExpected.toFixed(2)),
+    initial_paid: initialPayments.length > 0,
+    monthly_count: monthlyPayments.length,
+    total_paid: Number(totalPaid.toFixed(2)),
+    remaining_balance: Number(remainingBalance.toFixed(2)),
+    progress_percent: progressPercent,
+    is_fully_paid: expectedTotal > 0 && remainingBalance <= 0.0001,
+    service_status: service.service_status,
+    is_completed: service.service_status === 'completed'
+  };
+};
+
+/**
+ * Registrar un pago (inicial o mensual/parcial)
  * POST /api/service-monthly-payments
  */
 const registerPayment = async (req, res) => {
@@ -20,13 +54,12 @@ const registerPayment = async (req, res) => {
       patient_id,
       branch_id,
       payment_amount,
-      payment_type, // 'initial' o 'monthly'
+      payment_type,
       registered_by_dentist_id,
       clinical_notes,
       service_name
     } = req.body;
 
-    // Validaciones basicas
     if (!consultation_additional_service_id) {
       return res.status(400).json({
         success: false,
@@ -41,7 +74,7 @@ const registerPayment = async (req, res) => {
       });
     }
 
-    if (!payment_amount || payment_amount <= 0) {
+    if (!payment_amount || Number(payment_amount) <= 0) {
       return res.status(400).json({
         success: false,
         message: 'payment_amount debe ser mayor a 0'
@@ -55,92 +88,79 @@ const registerPayment = async (req, res) => {
       });
     }
 
-    const userId = req.user?.userId || req.user?.user_id || null;
-
-    // Obtener el estado actual del servicio
-    const serviceStatus = await serviceMonthlyPaymentsModel.getServicePaymentStatus(
-      consultation_additional_service_id
-    );
-
-    if (!serviceStatus) {
-      return res.status(404).json({
-        success: false,
-        message: 'Servicio adicional no encontrado'
-      });
-    }
-
-    // Verificar que el servicio no este finalizado
-    if (serviceStatus.service.service_status === 'completed') {
+    const resolvedPaymentType = payment_type || 'monthly';
+    if (!SUPPORTED_PAYMENT_TYPES.includes(resolvedPaymentType)) {
       return res.status(400).json({
         success: false,
-        message: 'No se pueden agregar pagos a un servicio finalizado'
+        message: `payment_type debe ser uno de: ${SUPPORTED_PAYMENT_TYPES.join(', ')}`
       });
     }
 
-    // Determinar numero de pago
-    let payment_number = 1;
-    if (payment_type === 'monthly') {
-      payment_number = await serviceMonthlyPaymentsModel.getNextPaymentNumber(
-        consultation_additional_service_id
-      );
-    }
+    const userId = req.user?.userId || req.user?.user_id || null;
+    const performedDate = formatDateYMD();
+    const performedTime = formatTimeHMS();
+    const resolvedServiceName = service_name || 'Servicio Adicional';
+    const itemName = resolvedPaymentType === 'initial'
+      ? `${resolvedServiceName} - Pago Inicial`
+      : `${resolvedServiceName} - Cuota`;
+    const itemDescription = clinical_notes
+      || `Pago ${resolvedPaymentType === 'initial' ? 'inicial' : 'parcial'} de servicio adicional`;
 
-    // 1. Primero crear el registro de ingreso (procedure_income) para comisiones
-    const incomeData = {
-      consultation_id,
-      patient_id,
-      branch_id,
-      income_type: 'additional_service',
-      additional_service_id: consultation_additional_service_id,
-      item_name: payment_type === 'initial'
-        ? `${service_name || 'Servicio'} - Pago Inicial`
-        : `${service_name || 'Servicio'} - Cuota Mensual #${payment_number}`,
-      item_description: clinical_notes || `Pago ${payment_type === 'initial' ? 'inicial' : 'mensual'} de servicio adicional`,
-      amount: payment_amount,
-      final_amount: payment_amount,
-      performed_by_dentist_id: registered_by_dentist_id,
-      performed_date: formatDateYMD(),
-      performed_time: new Date().toTimeString().split(' ')[0],
-      clinical_notes: clinical_notes,
-      income_status: 'confirmed',
-      user_id_registration: userId
-    };
+    const result = await serviceMonthlyPaymentsModel.registerPaymentWithIncome({
+      incomeData: {
+        consultation_id,
+        patient_id,
+        branch_id,
+        item_name: itemName,
+        item_description: itemDescription,
+        performed_by_dentist_id: registered_by_dentist_id,
+        performed_date: performedDate,
+        performed_time: performedTime,
+        clinical_notes: clinical_notes || null,
+        user_id_registration: userId
+      },
+      paymentData: {
+        consultation_additional_service_id,
+        consultation_id,
+        patient_id,
+        branch_id,
+        payment_amount,
+        payment_date: performedDate,
+        payment_type: resolvedPaymentType,
+        registered_by_dentist_id,
+        clinical_notes: clinical_notes || null,
+        user_id_registration: userId
+      }
+    });
 
-    // Usar createProcedureIncomeWithTracking para inicializar campos de deuda
-    const income = await procedureIncomeModel.createProcedureIncomeWithTracking(incomeData);
-
-    // 2. Crear el registro de pago mensual
-    const paymentData = {
-      consultation_additional_service_id,
-      consultation_id,
-      patient_id,
-      branch_id,
-      payment_number,
-      payment_amount,
-      payment_date: formatDateYMD(),
-      payment_type: payment_type || 'monthly',
-      registered_by_dentist_id,
-      income_id: income.income_id,
-      clinical_notes,
-      user_id_registration: userId
-    };
-
-    const payment = await serviceMonthlyPaymentsModel.createPayment(paymentData);
-
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: payment_type === 'initial'
+      message: resolvedPaymentType === 'initial'
         ? 'Pago inicial registrado exitosamente'
-        : `Cuota mensual #${payment_number} registrada exitosamente`,
+        : `Cuota #${result.payment_number} registrada exitosamente`,
       data: {
-        payment,
-        income
+        payment: result.payment,
+        income: result.income
       }
     });
 
   } catch (error) {
     console.error('Error en registerPayment:', error);
-    res.status(500).json({
+    const clientErrorMessages = [
+      'Servicio adicional no encontrado',
+      'No se pueden agregar pagos a un servicio finalizado'
+    ];
+    if (
+      clientErrorMessages.includes(error.message)
+      || error.message.startsWith('El monto excede el saldo restante')
+    ) {
+      const isNotFound = error.message === 'Servicio adicional no encontrado';
+      return res.status(isNotFound ? 404 : 400).json({
+        success: false,
+        message: error.message
+      });
+    }
+    return res.status(500).json({
       success: false,
       message: 'Error al registrar el pago',
       error: error.message
@@ -204,11 +224,8 @@ const getServicePaymentStatus = async (req, res) => {
       });
     }
 
-    // Calcular totales
     const initialPayments = status.payments.filter(p => p.payment_type === 'initial');
     const monthlyPayments = status.payments.filter(p => p.payment_type === 'monthly');
-
-    const totalPaid = status.payments.reduce((sum, p) => sum + parseFloat(p.payment_amount || 0), 0);
 
     res.json({
       success: true,
@@ -219,13 +236,7 @@ const getServicePaymentStatus = async (req, res) => {
           monthly: monthlyPayments,
           all: status.payments
         },
-        summary: {
-          initial_paid: initialPayments.length > 0,
-          monthly_count: monthlyPayments.length,
-          total_paid: totalPaid,
-          service_status: status.service.service_status,
-          is_completed: status.service.service_status === 'completed'
-        }
+        summary: buildSummary(status.service, status.payments)
       }
     });
 
@@ -234,6 +245,63 @@ const getServicePaymentStatus = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Error al obtener el estado del servicio',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Obtener el estado de cuenta consolidado del paciente:
+ * lista de servicios adicionales con presupuesto, saldo, progreso y pagos.
+ * GET /api/service-monthly-payments/patient/:patientId/statement
+ */
+const getPatientAccountStatement = async (req, res) => {
+  try {
+    const { patientId } = req.params;
+    if (!patientId) {
+      return res.status(400).json({ success: false, message: 'patientId es requerido' });
+    }
+    const statement = await serviceMonthlyPaymentsModel.getPatientAccountStatement(Number(patientId));
+
+    const aggregate = statement.reduce((acc, s) => {
+      acc.expected_total += s.expected_total;
+      acc.total_paid += s.total_paid;
+      acc.remaining_balance += s.remaining_balance;
+      acc.services_count += 1;
+      if (s.service_status === 'in_progress') acc.in_progress_count += 1;
+      else if (s.service_status === 'completed') acc.completed_count += 1;
+      else if (s.service_status === 'pending') acc.pending_count += 1;
+      return acc;
+    }, {
+      expected_total: 0,
+      total_paid: 0,
+      remaining_balance: 0,
+      services_count: 0,
+      in_progress_count: 0,
+      completed_count: 0,
+      pending_count: 0
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        services: statement,
+        aggregate: {
+          expected_total: Number(aggregate.expected_total.toFixed(2)),
+          total_paid: Number(aggregate.total_paid.toFixed(2)),
+          remaining_balance: Number(aggregate.remaining_balance.toFixed(2)),
+          services_count: aggregate.services_count,
+          in_progress_count: aggregate.in_progress_count,
+          completed_count: aggregate.completed_count,
+          pending_count: aggregate.pending_count
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error en getPatientAccountStatement:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al obtener el estado de cuenta del paciente',
       error: error.message
     });
   }
@@ -502,6 +570,7 @@ module.exports = {
   registerPayment,
   getPaymentsByService,
   getServicePaymentStatus,
+  getPatientAccountStatement,
   getPaymentsByPatient,
   getPaymentsByDentist,
   finalizeService,

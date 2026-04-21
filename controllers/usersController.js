@@ -4,7 +4,6 @@ const {
   getUserById,
   createUser,
   updateUser,
-  updatePassword,
   deleteUser,
   getAvailableAdministrators
 } = require('../models/usersModel');
@@ -338,41 +337,6 @@ const updateExistingUser = async (req, res) => {
   }
 };
 
-const changePassword = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { new_password } = req.body;
-
-    if (!new_password || new_password.length < 6) {
-      return res.status(400).json({
-        success: false,
-        error: 'La contraseña debe tener al menos 6 caracteres'
-      });
-    }
-
-    const password_hash = await bcrypt.hash(new_password, 10);
-    const updated = await updatePassword(parseInt(id), password_hash, req.user.user_id);
-
-    if (!updated) {
-      return res.status(404).json({
-        success: false,
-        error: 'Usuario no encontrado'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Contraseña actualizada exitosamente'
-    });
-  } catch (error) {
-    console.error('Error al cambiar contraseña:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Error al cambiar contraseña'
-    });
-  }
-};
-
 const deleteExistingUser = async (req, res) => {
   try {
     const { id } = req.params;
@@ -423,7 +387,6 @@ module.exports = {
   getUser,
   createNewUser,
   updateExistingUser,
-  changePassword,
   deleteExistingUser,
   getAvailableAdmins
 };
