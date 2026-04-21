@@ -290,13 +290,77 @@ const findByAppointmentId = async (appointmentId) => {
 const EDITABLE_REQUEST_STATUSES = ['pending'];
 
 /**
- * Upsert de solicitud de radiografía (lógica server-side):
- * - Busca la última solicitud activa del consultation_id (o appointment_id).
- * - Si existe y su request_status es editable ('pending') → UPDATE.
- * - En cualquier otro caso (no existe, o ya fue procesada) → INSERT nuevo registro.
+ * Hash determinista de cualquier string a un entero de 32 bits (para pg_advisory_xact_lock
+ * cuando no tenemos un consultation_id numérico todavía — ej. primer save antes de que
+ * la consulta exista en BD).
+ */
+const hashStringToInt = (str) => {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  }
+  return h;
+};
+
+/**
+ * Obtiene una solicitud activa por id (consulta simple, sin JOINs).
+ */
+const getActiveRequestById = async (client, requestId) => {
+  const query = `
+    SELECT * FROM radiography_requests
+    WHERE radiography_request_id = $1 AND status = 'active'
+    LIMIT 1
+  `;
+  const result = await client.query(query, [requestId]);
+  return result.rows.length > 0 ? result.rows[0] : null;
+};
+
+/**
+ * Versión transaccional del find-by-consultation que usa un client específico.
+ */
+const findByConsultationIdTx = async (client, consultationId) => {
+  if (!consultationId) return null;
+  const query = `
+    SELECT * FROM radiography_requests
+    WHERE consultation_id = $1 AND status = 'active'
+    ORDER BY date_time_registration DESC NULLS LAST, radiography_request_id DESC
+    LIMIT 1
+  `;
+  const result = await client.query(query, [consultationId]);
+  return result.rows.length > 0 ? result.rows[0] : null;
+};
+
+/**
+ * Versión transaccional del find-by-appointment.
+ */
+const findByAppointmentIdTx = async (client, appointmentId) => {
+  if (!appointmentId) return null;
+  const query = `
+    SELECT rr.* FROM radiography_requests rr
+    INNER JOIN consultations c ON rr.consultation_id = c.consultation_id
+    WHERE c.appointment_id = $1 AND rr.status = 'active'
+    ORDER BY rr.date_time_registration DESC NULLS LAST, rr.radiography_request_id DESC
+    LIMIT 1
+  `;
+  const result = await client.query(query, [appointmentId]);
+  return result.rows.length > 0 ? result.rows[0] : null;
+};
+
+/**
+ * Upsert de solicitud de radiografía (lógica server-side) envuelto en una transacción
+ * con pg_advisory_xact_lock para serializar concurrencia sobre la misma consulta.
+ *
+ * Reglas de búsqueda del registro existente (en orden):
+ *   1. Si el FE envía `radiography_request_id` (hint tras un INSERT previo), se usa.
+ *   2. Si se proveyó consultation_id, se busca la última activa de esa consulta.
+ *   3. Si se proveyó appointment_id, se busca por esa cita.
+ *
+ * Si el candidato encontrado está en estado editable ('pending') → UPDATE;
+ * en cualquier otro caso (no existe, o ya fue procesada) → INSERT nuevo registro.
  */
 const upsertRadiographyRequest = async (requestData) => {
   const {
+    radiography_request_id, // hint: id previo que el FE ya conoce (puede ser undefined)
     patient_id,
     dentist_id,
     branch_id,
@@ -314,81 +378,112 @@ const upsertRadiographyRequest = async (requestData) => {
     user_id_registration
   } = requestData;
 
-  // Buscar solicitud existente por consultation_id o appointment_id
-  let existingRequest = null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  if (consultation_id) {
-    existingRequest = await findByConsultationId(consultation_id);
-  }
+    // Bloqueo de transacción para serializar upserts concurrentes de la misma consulta.
+    // Si aún no hay consultation_id (primer save antes de que se cree la consulta),
+    // caemos a una clave derivada de (dentist_id, patient_id) para que dos saves simultáneos
+    // del mismo doctor sobre el mismo paciente también queden serializados.
+    const lockKey = consultation_id
+      ? Number(consultation_id)
+      : hashStringToInt(`rr:d:${dentist_id || 0}:p:${patient_id || 0}:a:${appointment_id || 0}`);
+    await client.query('SELECT pg_advisory_xact_lock($1)', [lockKey]);
 
-  if (!existingRequest && appointment_id) {
-    existingRequest = await findByAppointmentId(appointment_id);
-  }
+    // Buscar el registro existente por la mejor pista disponible
+    let existingRequest = null;
 
-  const isEditable = existingRequest && EDITABLE_REQUEST_STATUSES.includes(existingRequest.request_status);
+    if (radiography_request_id) {
+      existingRequest = await getActiveRequestById(client, radiography_request_id);
+    }
 
-  if (isEditable) {
-    // Actualizar solicitud existente
-    const updateQuery = `
-      UPDATE radiography_requests SET
-        radiography_type = COALESCE($1, radiography_type),
-        area_of_interest = $2,
-        clinical_indication = $3,
-        urgency = COALESCE($4, urgency),
-        notes = $5,
-        request_data = $6,
-        pricing_data = $7,
-        user_id_modification = $8,
-        date_time_modification = CURRENT_TIMESTAMP
-      WHERE radiography_request_id = $9 AND status = 'active'
+    if (!existingRequest && consultation_id) {
+      existingRequest = await findByConsultationIdTx(client, consultation_id);
+    }
+
+    if (!existingRequest && appointment_id) {
+      existingRequest = await findByAppointmentIdTx(client, appointment_id);
+    }
+
+    const isEditable =
+      existingRequest && EDITABLE_REQUEST_STATUSES.includes(existingRequest.request_status);
+
+    if (isEditable) {
+      // Actualizar solicitud existente.
+      // Además, si el registro encontrado quedó con consultation_id NULL (porque el primer
+      // save ocurrió antes de que la consulta existiera en BD) y ahora sí tenemos uno,
+      // lo completamos en el mismo UPDATE para "adoptar" el registro huérfano.
+      const updateQuery = `
+        UPDATE radiography_requests SET
+          radiography_type = COALESCE($1, radiography_type),
+          area_of_interest = $2,
+          clinical_indication = $3,
+          urgency = COALESCE($4, urgency),
+          notes = $5,
+          request_data = $6,
+          pricing_data = $7,
+          consultation_id = COALESCE(consultation_id, $8),
+          user_id_modification = $9,
+          date_time_modification = CURRENT_TIMESTAMP
+        WHERE radiography_request_id = $10 AND status = 'active'
+        RETURNING *
+      `;
+
+      const updateValues = [
+        radiography_type || 'diagnostic_plan',
+        area_of_interest || null,
+        clinical_indication || null,
+        urgency || 'normal',
+        notes || null,
+        request_data ? JSON.stringify(request_data) : existingRequest.request_data,
+        pricing_data ? JSON.stringify(pricing_data) : existingRequest.pricing_data,
+        consultation_id || null,
+        user_id_registration,
+        existingRequest.radiography_request_id
+      ];
+
+      const result = await client.query(updateQuery, updateValues);
+      await client.query('COMMIT');
+      return { ...result.rows[0], wasUpdated: true };
+    }
+
+    // Crear nueva solicitud
+    const insertQuery = `
+      INSERT INTO radiography_requests (
+        patient_id, dentist_id, branch_id, consultation_id, request_date,
+        radiography_type, area_of_interest, clinical_indication, urgency,
+        request_status, notes, request_data, pricing_data, user_id_registration
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING *
     `;
 
-    const updateValues = [
+    const insertValues = [
+      patient_id || null,
+      dentist_id || null,
+      branch_id || 1,
+      consultation_id || null,
+      request_date || formatDateYMD(),
       radiography_type || 'diagnostic_plan',
       area_of_interest || null,
       clinical_indication || null,
       urgency || 'normal',
+      request_status || 'pending',
       notes || null,
-      request_data ? JSON.stringify(request_data) : existingRequest.request_data,
-      pricing_data ? JSON.stringify(pricing_data) : existingRequest.pricing_data,
-      user_id_registration,
-      existingRequest.radiography_request_id
+      request_data ? JSON.stringify(request_data) : null,
+      pricing_data ? JSON.stringify(pricing_data) : null,
+      user_id_registration
     ];
 
-    const result = await pool.query(updateQuery, updateValues);
-    return { ...result.rows[0], wasUpdated: true };
+    const result = await client.query(insertQuery, insertValues);
+    await client.query('COMMIT');
+    return { ...result.rows[0], wasUpdated: false };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
-
-  // Crear nueva solicitud
-  const insertQuery = `
-    INSERT INTO radiography_requests (
-      patient_id, dentist_id, branch_id, consultation_id, request_date,
-      radiography_type, area_of_interest, clinical_indication, urgency,
-      request_status, notes, request_data, pricing_data, user_id_registration
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-    RETURNING *
-  `;
-
-  const insertValues = [
-    patient_id || null,
-    dentist_id || null,
-    branch_id || 1,
-    consultation_id || null,
-    request_date || formatDateYMD(),
-    radiography_type || 'diagnostic_plan',
-    area_of_interest || null,
-    clinical_indication || null,
-    urgency || 'normal',
-    request_status || 'pending',
-    notes || null,
-    request_data ? JSON.stringify(request_data) : null,
-    pricing_data ? JSON.stringify(pricing_data) : null,
-    user_id_registration
-  ];
-
-  const result = await pool.query(insertQuery, insertValues);
-  return { ...result.rows[0], wasUpdated: false };
 };
 
 /**
