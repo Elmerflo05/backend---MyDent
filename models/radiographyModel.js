@@ -1,5 +1,12 @@
 const pool = require('../config/db');
 const { formatDateYMD } = require('../utils/dateUtils');
+const {
+  RADIOGRAPHY_REQUEST_STATUS,
+  REJECTABLE_REQUEST_STATUSES,
+  REACTIVATABLE_REQUEST_STATUSES,
+  isRejectable,
+  isReactivatable
+} = require('../constants/radiographyStatus');
 
 const getAllRadiographyRequests = async (filters = {}) => {
   let query = `
@@ -20,6 +27,11 @@ const getAllRadiographyRequests = async (filters = {}) => {
         THEN u_performed.first_name || ' ' || u_performed.last_name
         ELSE NULL
       END as performed_by_name,
+      CASE
+        WHEN rr.rejected_by_user_id IS NOT NULL
+        THEN u_rejected.first_name || ' ' || u_rejected.last_name
+        ELSE NULL
+      END as rejected_by_name,
       u_creator.role_id as creator_role_id
     FROM radiography_requests rr
     LEFT JOIN patients p ON rr.patient_id = p.patient_id
@@ -27,6 +39,7 @@ const getAllRadiographyRequests = async (filters = {}) => {
     LEFT JOIN users u ON d.user_id = u.user_id
     LEFT JOIN branches b ON rr.branch_id = b.branch_id
     LEFT JOIN users u_performed ON rr.performed_by = u_performed.user_id
+    LEFT JOIN users u_rejected ON rr.rejected_by_user_id = u_rejected.user_id
     LEFT JOIN users u_creator ON rr.user_id_registration = u_creator.user_id
     WHERE rr.status = 'active'
   `;
@@ -97,6 +110,14 @@ const getAllRadiographyRequests = async (filters = {}) => {
     query += ` AND (u_creator.role_id IS NULL OR u_creator.role_id != 7)`;
   }
 
+  // Por defecto el técnico no ve las rechazadas en su cola de trabajo.
+  // El panel SA pasa include_rejected=true para incluirlas.
+  if (!filters.include_rejected && filters.request_status !== RADIOGRAPHY_REQUEST_STATUS.REJECTED_BY_TECHNICIAN) {
+    query += ` AND (rr.request_status IS NULL OR rr.request_status != $${paramIndex})`;
+    params.push(RADIOGRAPHY_REQUEST_STATUS.REJECTED_BY_TECHNICIAN);
+    paramIndex++;
+  }
+
   query += ` ORDER BY rr.request_date DESC, rr.radiography_request_id DESC`;
 
   if (filters.limit) {
@@ -131,6 +152,7 @@ const getRadiographyRequestById = async (requestId) => {
         ELSE NULL
       END as dentist_name,
       u.phone as dentist_phone,
+      u.user_id as dentist_user_id,
       b.branch_name,
       b.address as branch_address,
       b.phone as branch_phone,
@@ -138,13 +160,19 @@ const getRadiographyRequestById = async (requestId) => {
         WHEN rr.performed_by IS NOT NULL
         THEN u_performed.first_name || ' ' || u_performed.last_name
         ELSE NULL
-      END as performed_by_name
+      END as performed_by_name,
+      CASE
+        WHEN rr.rejected_by_user_id IS NOT NULL
+        THEN u_rejected.first_name || ' ' || u_rejected.last_name
+        ELSE NULL
+      END as rejected_by_name
     FROM radiography_requests rr
     LEFT JOIN patients p ON rr.patient_id = p.patient_id
     LEFT JOIN dentists d ON rr.dentist_id = d.dentist_id
     LEFT JOIN users u ON d.user_id = u.user_id
     LEFT JOIN branches b ON rr.branch_id = b.branch_id
     LEFT JOIN users u_performed ON rr.performed_by = u_performed.user_id
+    LEFT JOIN users u_rejected ON rr.rejected_by_user_id = u_rejected.user_id
     WHERE rr.radiography_request_id = $1 AND rr.status = 'active'
   `;
 
@@ -173,7 +201,7 @@ const createRadiographyRequest = async (requestData) => {
     requestData.area_of_interest || null,
     requestData.clinical_indication || null,
     requestData.urgency || 'normal',
-    requestData.request_status || 'pending',
+    requestData.request_status || RADIOGRAPHY_REQUEST_STATUS.PENDING,
     requestData.performed_date || null,
     requestData.performed_by || null,
     requestData.image_url || null,
@@ -283,11 +311,10 @@ const findByAppointmentId = async (appointmentId) => {
 /**
  * Estados considerados "editables" por el doctor:
  * Si la última solicitud activa está en uno de estos estados, el siguiente
- * Guardar ACTUALIZA. En cualquier otro estado, CREA una solicitud nueva.
- * Regla del negocio: mientras el técnico no haya tocado la solicitud (pending),
- * el doctor puede seguir refinando; una vez procesada, el siguiente save es otra intención.
+ * Guardar ACTUALIZA. En cualquier otro estado (incluyendo rechazada por técnico),
+ * CREA una solicitud nueva.
  */
-const EDITABLE_REQUEST_STATUSES = ['pending'];
+const EDITABLE_REQUEST_STATUSES = [RADIOGRAPHY_REQUEST_STATUS.PENDING];
 
 /**
  * Hash determinista de cualquier string a un entero de 32 bits (para pg_advisory_xact_lock
@@ -468,7 +495,7 @@ const upsertRadiographyRequest = async (requestData) => {
       area_of_interest || null,
       clinical_indication || null,
       urgency || 'normal',
-      request_status || 'pending',
+      request_status || RADIOGRAPHY_REQUEST_STATUS.PENDING,
       notes || null,
       request_data ? JSON.stringify(request_data) : null,
       pricing_data ? JSON.stringify(pricing_data) : null,
@@ -487,21 +514,20 @@ const upsertRadiographyRequest = async (requestData) => {
 };
 
 /**
- * Estados permitidos para eliminación (soft-delete).
- * Solo solicitudes aún no tocadas por el técnico pueden borrarse.
+ * Rechazo de una solicitud de radiografía por el técnico de imágenes.
+ * A diferencia del soft-delete previo (status='inactive'), aquí la orden permanece visible
+ * (status='active') con request_status='rejected_by_technician' para que el doctor la vea
+ * y pueda reenviar otra; el SA también la ve en su panel.
+ *
+ * Devuelve:
+ *   - { ok: true, data, context } si se rechazó.
+ *   - { ok: false, reason: 'not_found' } si no existe o no está activa.
+ *   - { ok: false, reason: 'not_rejectable', currentStatus } si no está en estado permitido.
  */
-const DELETABLE_REQUEST_STATUSES = ['pending'];
-
-/**
- * Soft-delete de una solicitud de radiografía.
- * Devuelve un objeto con el resultado:
- *   - { ok: true } si se eliminó.
- *   - { ok: false, reason: 'not_found' } si no existe o ya estaba inactiva.
- *   - { ok: false, reason: 'not_deletable', currentStatus } si existe pero no está en un estado permitido.
- */
-const deleteRadiographyRequest = async (requestId, userId) => {
+const rejectRadiographyRequest = async (requestId, userId, reason = null) => {
   const checkQuery = `
-    SELECT radiography_request_id, request_status
+    SELECT radiography_request_id, request_status, patient_id, consultation_id,
+           dentist_id, user_id_registration, branch_id, radiography_type
     FROM radiography_requests
     WHERE radiography_request_id = $1 AND status = 'active'
   `;
@@ -511,23 +537,203 @@ const deleteRadiographyRequest = async (requestId, userId) => {
     return { ok: false, reason: 'not_found' };
   }
 
-  const currentStatus = checkResult.rows[0].request_status;
+  const existing = checkResult.rows[0];
+  if (!isRejectable(existing.request_status)) {
+    return { ok: false, reason: 'not_rejectable', currentStatus: existing.request_status };
+  }
 
-  if (!DELETABLE_REQUEST_STATUSES.includes(currentStatus)) {
-    return { ok: false, reason: 'not_deletable', currentStatus };
+  const sanitizedReason = reason ? String(reason).slice(0, 500).replace(/[<>]/g, '') : null;
+
+  const updateQuery = `
+    UPDATE radiography_requests SET
+      request_status = $1,
+      rejection_reason = $2,
+      rejected_by_user_id = $3,
+      rejected_at = NOW(),
+      user_id_modification = $3,
+      date_time_modification = CURRENT_TIMESTAMP
+    WHERE radiography_request_id = $4 AND status = 'active'
+    RETURNING *
+  `;
+
+  const result = await pool.query(updateQuery, [
+    RADIOGRAPHY_REQUEST_STATUS.REJECTED_BY_TECHNICIAN,
+    sanitizedReason,
+    userId,
+    requestId
+  ]);
+
+  if (result.rowCount === 0) {
+    return { ok: false, reason: 'not_found' };
+  }
+
+  return { ok: true, data: result.rows[0], context: existing };
+};
+
+/**
+ * Reactivación de una solicitud rechazada por el técnico (acción de SA / admin).
+ * Limpia campos de rechazo y devuelve la orden a 'pending' para que el técnico la procese.
+ */
+const reactivateRadiographyRequest = async (requestId, userId) => {
+  const checkQuery = `
+    SELECT radiography_request_id, request_status, dentist_id, user_id_registration,
+           patient_id, consultation_id, branch_id
+    FROM radiography_requests
+    WHERE radiography_request_id = $1 AND status = 'active'
+  `;
+  const checkResult = await pool.query(checkQuery, [requestId]);
+
+  if (checkResult.rowCount === 0) {
+    return { ok: false, reason: 'not_found' };
+  }
+
+  const existing = checkResult.rows[0];
+  if (!isReactivatable(existing.request_status)) {
+    return { ok: false, reason: 'not_reactivatable', currentStatus: existing.request_status };
   }
 
   const updateQuery = `
     UPDATE radiography_requests SET
-      status = 'inactive',
-      user_id_modification = $1,
+      request_status = $1,
+      rejection_reason = NULL,
+      rejected_by_user_id = NULL,
+      rejected_at = NULL,
+      user_id_modification = $2,
       date_time_modification = CURRENT_TIMESTAMP
-    WHERE radiography_request_id = $2 AND status = 'active'
-    RETURNING radiography_request_id
+    WHERE radiography_request_id = $3 AND status = 'active'
+    RETURNING *
   `;
 
-  const result = await pool.query(updateQuery, [userId, requestId]);
-  return result.rowCount > 0 ? { ok: true } : { ok: false, reason: 'not_found' };
+  const result = await pool.query(updateQuery, [
+    RADIOGRAPHY_REQUEST_STATUS.PENDING,
+    userId,
+    requestId
+  ]);
+
+  return result.rowCount > 0
+    ? { ok: true, data: result.rows[0], context: existing }
+    : { ok: false, reason: 'not_found' };
+};
+
+/**
+ * Listado completo de órdenes para el panel del SA / admin.
+ * Permite filtros por estado (incluyendo arrays), sede, doctor, fechas.
+ * SIEMPRE incluye rechazadas. Admin filtrado a su sede a nivel controlador.
+ */
+const getAllOrdersForAdmin = async (filters = {}) => {
+  let query = `
+    SELECT
+      rr.*,
+      CASE
+        WHEN rr.patient_id IS NOT NULL THEN p.first_name || ' ' || p.last_name
+        ELSE COALESCE(
+          NULLIF(TRIM(CONCAT(rr.request_data->'patient'->>'nombres', ' ', rr.request_data->'patient'->>'apellidos')), ''),
+          NULLIF(TRIM(CONCAT(rr.request_data->'patientData'->>'nombres', ' ', rr.request_data->'patientData'->>'apellidos')), ''),
+          'Sin paciente'
+        )
+      END as patient_name,
+      p.identification_number,
+      CASE
+        WHEN rr.dentist_id IS NOT NULL THEN u_dentist.first_name || ' ' || u_dentist.last_name
+        ELSE COALESCE(
+          rr.request_data->'doctor'->>'nombre',
+          rr.request_data->'doctorData'->>'nombre',
+          'Sin doctor'
+        )
+      END as dentist_name,
+      b.branch_name,
+      CASE
+        WHEN rr.rejected_by_user_id IS NOT NULL
+        THEN u_rejected.first_name || ' ' || u_rejected.last_name
+        ELSE NULL
+      END as rejected_by_name,
+      CASE
+        WHEN rr.performed_by IS NOT NULL
+        THEN u_performed.first_name || ' ' || u_performed.last_name
+        ELSE NULL
+      END as performed_by_name,
+      u_creator.role_id as creator_role_id
+    FROM radiography_requests rr
+    LEFT JOIN patients p ON rr.patient_id = p.patient_id
+    LEFT JOIN dentists d ON rr.dentist_id = d.dentist_id
+    LEFT JOIN users u_dentist ON d.user_id = u_dentist.user_id
+    LEFT JOIN branches b ON rr.branch_id = b.branch_id
+    LEFT JOIN users u_rejected ON rr.rejected_by_user_id = u_rejected.user_id
+    LEFT JOIN users u_performed ON rr.performed_by = u_performed.user_id
+    LEFT JOIN users u_creator ON rr.user_id_registration = u_creator.user_id
+    WHERE rr.status = 'active'
+  `;
+
+  const params = [];
+  let paramIndex = 1;
+
+  if (filters.branch_id) {
+    query += ` AND rr.branch_id = $${paramIndex}`;
+    params.push(parseInt(filters.branch_id));
+    paramIndex++;
+  }
+
+  if (filters.dentist_id) {
+    query += ` AND rr.dentist_id = $${paramIndex}`;
+    params.push(parseInt(filters.dentist_id));
+    paramIndex++;
+  }
+
+  if (Array.isArray(filters.request_status_in) && filters.request_status_in.length > 0) {
+    const placeholders = filters.request_status_in.map(() => `$${paramIndex++}`).join(', ');
+    query += ` AND rr.request_status IN (${placeholders})`;
+    params.push(...filters.request_status_in);
+  } else if (filters.request_status) {
+    query += ` AND rr.request_status = $${paramIndex}`;
+    params.push(filters.request_status);
+    paramIndex++;
+  }
+
+  if (filters.date_from) {
+    query += ` AND rr.request_date >= $${paramIndex}`;
+    params.push(filters.date_from);
+    paramIndex++;
+  }
+
+  if (filters.date_to) {
+    query += ` AND rr.request_date <= $${paramIndex}`;
+    params.push(filters.date_to);
+    paramIndex++;
+  }
+
+  query += ` ORDER BY rr.date_time_registration DESC NULLS LAST, rr.radiography_request_id DESC`;
+
+  const limit = filters.limit ? parseInt(filters.limit) : 500;
+  query += ` LIMIT $${paramIndex}`;
+  params.push(limit);
+
+  const result = await pool.query(query, params);
+  return result.rows;
+};
+
+/**
+ * Devuelve TODAS las solicitudes activas de una consulta, ordenadas por
+ * date_time_registration DESC. Incluye rechazadas (para que el doctor las vea).
+ */
+const getRequestsByConsultationId = async (consultationId) => {
+  if (!consultationId) return [];
+
+  const query = `
+    SELECT
+      rr.*,
+      CASE
+        WHEN rr.rejected_by_user_id IS NOT NULL
+        THEN u_rejected.first_name || ' ' || u_rejected.last_name
+        ELSE NULL
+      END as rejected_by_name
+    FROM radiography_requests rr
+    LEFT JOIN users u_rejected ON rr.rejected_by_user_id = u_rejected.user_id
+    WHERE rr.consultation_id = $1 AND rr.status = 'active'
+    ORDER BY rr.date_time_registration DESC NULLS LAST, rr.radiography_request_id DESC
+  `;
+
+  const result = await pool.query(query, [consultationId]);
+  return result.rows;
 };
 
 const countRadiographyRequests = async (filters = {}) => {
@@ -602,6 +808,13 @@ const countRadiographyRequests = async (filters = {}) => {
     query += ` AND (u_creator.role_id IS NULL OR u_creator.role_id != 7)`;
   }
 
+  // Por defecto excluir rechazadas también del conteo (consistente con el listado).
+  if (!filters.include_rejected && filters.request_status !== RADIOGRAPHY_REQUEST_STATUS.REJECTED_BY_TECHNICIAN) {
+    query += ` AND (rr.request_status IS NULL OR rr.request_status != $${paramIndex})`;
+    params.push(RADIOGRAPHY_REQUEST_STATUS.REJECTED_BY_TECHNICIAN);
+    paramIndex++;
+  }
+
   const result = await pool.query(query, params);
   return parseInt(result.rows[0].total);
 };
@@ -611,7 +824,10 @@ module.exports = {
   getRadiographyRequestById,
   createRadiographyRequest,
   updateRadiographyRequest,
-  deleteRadiographyRequest,
+  rejectRadiographyRequest,
+  reactivateRadiographyRequest,
+  getAllOrdersForAdmin,
+  getRequestsByConsultationId,
   countRadiographyRequests,
   findByConsultationId,
   findByAppointmentId,

@@ -4,10 +4,18 @@ const {
   getRadiographyRequestById,
   createRadiographyRequest,
   updateRadiographyRequest,
-  deleteRadiographyRequest,
+  rejectRadiographyRequest,
+  reactivateRadiographyRequest,
+  getAllOrdersForAdmin,
+  getRequestsByConsultationId,
   countRadiographyRequests,
   upsertRadiographyRequest
 } = require('../models/radiographyModel');
+const {
+  RADIOGRAPHY_NOTIFICATION_TYPES,
+  RADIOGRAPHY_REQUEST_STATUS,
+  RADIOGRAPHY_REQUEST_STATUS_LABELS
+} = require('../constants/radiographyStatus');
 
 const {
   createMultipleRadiographyResults,
@@ -91,6 +99,7 @@ const getRadiographyRequests = async (req, res) => {
       date_from,
       date_to,
       source, // 'internal' | 'external' - Filtrar por origen de la solicitud
+      include_rejected, // 'true' | 'false' - Solo SA/admin lo activan; demás roles lo ignoran
       page = 1,
       limit = 20
     } = req.query;
@@ -110,6 +119,10 @@ const getRadiographyRequests = async (req, res) => {
       }
     }
 
+    // include_rejected solo lo respetamos para SA (1) y admin (2)
+    const allowIncludeRejected = [1, 2].includes(req.user.role_id);
+    const includeRejectedFlag = allowIncludeRejected && (include_rejected === 'true' || include_rejected === true);
+
     const filters = {
       patient_id: patient_id ? parseInt(patient_id) : null,
       dentist_id: effectiveDentistId,
@@ -120,7 +133,8 @@ const getRadiographyRequests = async (req, res) => {
       urgency,
       date_from,
       date_to,
-      source, // Pasar filtro de origen al modelo
+      source,
+      include_rejected: includeRejectedFlag,
       limit: parseInt(limit),
       offset: (parseInt(page) - 1) * parseInt(limit)
     };
@@ -268,15 +282,123 @@ const updateExistingRadiographyRequest = async (req, res) => {
   }
 };
 
-const deleteExistingRadiographyRequest = async (req, res) => {
+/**
+ * Notifica al doctor autor cuando el técnico rechaza su solicitud.
+ * Falla silencioso para no bloquear el rechazo.
+ */
+const notifyDoctorOfRejection = async ({ requestId, dentistId, creatorUserId, technicianUserId, reason }) => {
+  try {
+    let recipientUserId = null;
+
+    if (dentistId) {
+      const dentistUserResult = await pool.query(
+        `SELECT user_id FROM dentists WHERE dentist_id = $1`,
+        [dentistId]
+      );
+      if (dentistUserResult.rows.length > 0) {
+        recipientUserId = dentistUserResult.rows[0].user_id;
+      }
+    }
+
+    if (!recipientUserId) recipientUserId = creatorUserId;
+    if (!recipientUserId) return;
+
+    const message = reason
+      ? `El técnico rechazó tu solicitud de imágenes. Motivo: ${reason}`
+      : 'El técnico rechazó tu solicitud de imágenes. Revísala y vuelve a enviarla.';
+
+    await pool.query(
+      `INSERT INTO notifications (
+        user_id, notification_type, title, message,
+        related_id, related_type, status, priority, user_id_registration
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        recipientUserId,
+        RADIOGRAPHY_NOTIFICATION_TYPES.REQUEST_REJECTED,
+        'Solicitud de imágenes rechazada',
+        message,
+        requestId,
+        'radiography_request',
+        'unread',
+        'high',
+        technicianUserId
+      ]
+    );
+  } catch (error) {
+    console.error('Error al notificar rechazo al doctor:', error);
+  }
+};
+
+const notifyDoctorOfReactivation = async ({ requestId, dentistId, creatorUserId, adminUserId }) => {
+  try {
+    let recipientUserId = null;
+    if (dentistId) {
+      const dentistUserResult = await pool.query(
+        `SELECT user_id FROM dentists WHERE dentist_id = $1`,
+        [dentistId]
+      );
+      if (dentistUserResult.rows.length > 0) {
+        recipientUserId = dentistUserResult.rows[0].user_id;
+      }
+    }
+    if (!recipientUserId) recipientUserId = creatorUserId;
+    if (!recipientUserId) return;
+
+    await pool.query(
+      `INSERT INTO notifications (
+        user_id, notification_type, title, message,
+        related_id, related_type, status, priority, user_id_registration
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        recipientUserId,
+        RADIOGRAPHY_NOTIFICATION_TYPES.REQUEST_REACTIVATED,
+        'Solicitud de imágenes reactivada',
+        'Tu solicitud de imágenes fue reactivada por el administrador y vuelve a estar pendiente.',
+        requestId,
+        'radiography_request',
+        'unread',
+        'normal',
+        adminUserId
+      ]
+    );
+  } catch (error) {
+    console.error('Error al notificar reactivación al doctor:', error);
+  }
+};
+
+const rejectExistingRadiographyRequest = async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await deleteRadiographyRequest(parseInt(id), req.user.user_id);
+    const { reason } = req.body || {};
+    const result = await rejectRadiographyRequest(
+      parseInt(id),
+      req.user.user_id,
+      reason
+    );
 
     if (result.ok) {
+      // Notificar en tiempo real al portal del paciente para que su Historial Médico
+      // refleje el rechazo sin recarga manual.
+      if (global.io && result.context?.patient_id) {
+        global.io.to(`patient-${result.context.patient_id}`).emit('radiography-rejected', {
+          radiography_request_id: parseInt(id),
+          consultation_id: result.context.consultation_id
+        });
+      }
+
+      // Notificar al doctor autor (no bloqueante)
+      await notifyDoctorOfRejection({
+        requestId: parseInt(id),
+        dentistId: result.context?.dentist_id,
+        creatorUserId: result.context?.user_id_registration,
+        technicianUserId: req.user.user_id,
+        reason: result.data?.rejection_reason
+      });
+
       return res.json({
         success: true,
-        message: 'Solicitud de radiografía eliminada exitosamente'
+        message: 'Solicitud de radiografía rechazada exitosamente',
+        data: result.data
       });
     }
 
@@ -287,24 +409,140 @@ const deleteExistingRadiographyRequest = async (req, res) => {
       });
     }
 
-    if (result.reason === 'not_deletable') {
+    if (result.reason === 'not_rejectable') {
       return res.status(409).json({
         success: false,
-        error: 'Solo se pueden eliminar solicitudes en estado pendiente',
+        error: 'Solo se pueden rechazar solicitudes en estado pendiente',
         currentStatus: result.currentStatus
       });
     }
 
     return res.status(500).json({
       success: false,
-      error: 'No se pudo eliminar la solicitud'
+      error: 'No se pudo rechazar la solicitud'
     });
   } catch (error) {
-    console.error('Error al eliminar solicitud de radiografía:', error);
+    console.error('Error al rechazar solicitud de radiografía:', error);
     res.status(500).json({
       success: false,
-      error: 'Error al eliminar solicitud de radiografía'
+      error: 'Error al rechazar solicitud de radiografía'
     });
+  }
+};
+
+/**
+ * Reactiva una orden rechazada — exclusivo de super_admin (1) y admin (2).
+ */
+const reactivateExistingRadiographyRequest = async (req, res) => {
+  try {
+    if (![1, 2].includes(req.user.role_id)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Solo super_admin o admin pueden reactivar solicitudes'
+      });
+    }
+
+    const { id } = req.params;
+    const result = await reactivateRadiographyRequest(parseInt(id), req.user.user_id);
+
+    if (result.ok) {
+      await notifyDoctorOfReactivation({
+        requestId: parseInt(id),
+        dentistId: result.context?.dentist_id,
+        creatorUserId: result.context?.user_id_registration,
+        adminUserId: req.user.user_id
+      });
+
+      return res.json({
+        success: true,
+        message: 'Solicitud reactivada exitosamente',
+        data: result.data
+      });
+    }
+
+    if (result.reason === 'not_found') {
+      return res.status(404).json({ success: false, error: 'Solicitud no encontrada' });
+    }
+    if (result.reason === 'not_reactivatable') {
+      return res.status(409).json({
+        success: false,
+        error: 'Solo se pueden reactivar solicitudes rechazadas por el técnico',
+        currentStatus: result.currentStatus
+      });
+    }
+    return res.status(500).json({ success: false, error: 'No se pudo reactivar la solicitud' });
+  } catch (error) {
+    console.error('Error al reactivar solicitud de radiografía:', error);
+    res.status(500).json({ success: false, error: 'Error al reactivar solicitud' });
+  }
+};
+
+/**
+ * Listado completo de órdenes para el panel SA — todos los estados, todas las sedes (super_admin)
+ * o sólo la propia (admin). Los demás roles tienen prohibido este endpoint.
+ */
+const getAllOrdersForAdminHandler = async (req, res) => {
+  try {
+    if (![1, 2].includes(req.user.role_id)) {
+      return res.status(403).json({
+        success: false,
+        error: 'No tiene permiso para ver este listado'
+      });
+    }
+
+    const {
+      branch_id,
+      dentist_id,
+      request_status,
+      date_from,
+      date_to,
+      limit
+    } = req.query;
+
+    let request_status_in = null;
+    if (request_status && request_status.includes(',')) {
+      request_status_in = request_status.split(',').map(s => s.trim()).filter(Boolean);
+    }
+
+    // Admin (role 2) sólo ve su sede; super_admin (role 1) puede filtrar libremente.
+    let effectiveBranchId = branch_id ? parseInt(branch_id) : null;
+    if (req.user.role_id === 2) {
+      effectiveBranchId = req.user.branch_id || null;
+    }
+
+    const orders = await getAllOrdersForAdmin({
+      branch_id: effectiveBranchId,
+      dentist_id,
+      request_status: request_status_in ? null : request_status,
+      request_status_in,
+      date_from,
+      date_to,
+      limit
+    });
+
+    res.json({
+      success: true,
+      data: orders,
+      total: orders.length,
+      statusLabels: RADIOGRAPHY_REQUEST_STATUS_LABELS
+    });
+  } catch (error) {
+    console.error('Error al listar órdenes para admin:', error);
+    res.status(500).json({ success: false, error: 'Error al obtener listado de órdenes' });
+  }
+};
+
+/**
+ * Devuelve todas las solicitudes de una consulta (incluye rechazadas) para el doctor.
+ */
+const getRequestsByConsultationHandler = async (req, res) => {
+  try {
+    const { consultationId } = req.params;
+    const list = await getRequestsByConsultationId(parseInt(consultationId));
+    res.json({ success: true, data: list });
+  } catch (error) {
+    console.error('Error al obtener solicitudes por consulta:', error);
+    res.status(500).json({ success: false, error: 'Error al obtener solicitudes' });
   }
 };
 
@@ -777,17 +1015,17 @@ const markDeliveredHandler = async (req, res) => {
       }
     }
 
-    // Solo se puede marcar como entregada si está en estado 'completed'
-    if (request.request_status !== 'completed') {
+    // Solo se puede marcar como entregada si está en estado COMPLETED
+    if (request.request_status !== RADIOGRAPHY_REQUEST_STATUS.COMPLETED) {
       return res.status(400).json({
         success: false,
-        error: `No se puede marcar como entregada. Estado actual: ${request.request_status}. Debe estar en estado 'completed'.`
+        error: `No se puede marcar como entregada. Estado actual: ${request.request_status}. Debe estar en estado '${RADIOGRAPHY_REQUEST_STATUS.COMPLETED}'.`
       });
     }
 
-    // Actualizar estado a 'delivered'
+    // Actualizar estado a DELIVERED
     const updated = await updateRadiographyRequest(requestId, {
-      request_status: 'delivered',
+      request_status: RADIOGRAPHY_REQUEST_STATUS.DELIVERED,
       user_id_modification: req.user.user_id
     });
 
@@ -897,9 +1135,9 @@ const uploadResultsHandler = async (req, res) => {
     // Crear los resultados en la base de datos
     const createdResults = await createMultipleRadiographyResults(resultsToCreate);
 
-    // Actualizar el estado de la solicitud a 'completed'
+    // Actualizar el estado de la solicitud a COMPLETED
     await updateRadiographyRequest(requestId, {
-      request_status: 'completed',
+      request_status: RADIOGRAPHY_REQUEST_STATUS.COMPLETED,
       performed_date: formatDateYMD(),
       performed_by: req.user.user_id,
       user_id_modification: req.user.user_id
@@ -1495,7 +1733,7 @@ const registerPaymentHandler = async (req, res) => {
         WHERE radiography_request_id = $4
       `, [
         JSON.stringify(updatedPricingData),
-        isExternalRequest ? 'completed' : request.request_status,
+        isExternalRequest ? RADIOGRAPHY_REQUEST_STATUS.COMPLETED : request.request_status,
         req.user.user_id,
         requestId
       ]);
@@ -1650,7 +1888,10 @@ module.exports = {
   getRadiographyRequest,
   createNewRadiographyRequest,
   updateExistingRadiographyRequest,
-  deleteExistingRadiographyRequest,
+  rejectExistingRadiographyRequest,
+  reactivateExistingRadiographyRequest,
+  getAllOrdersForAdminHandler,
+  getRequestsByConsultationHandler,
   upsertRadiographyRequestHandler,
   approvePricingHandler,
   rejectPricingHandler,

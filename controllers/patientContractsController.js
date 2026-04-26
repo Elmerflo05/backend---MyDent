@@ -11,11 +11,15 @@ const {
   countContractsByPatientId
 } = require('../models/patientContractsModel');
 
+const PATIENT_ROLE_ID = 6;
+
 const getPatientContracts = async (req, res) => {
   try {
     const { patient_id, branch_id, contract_type, is_signed, page = 1, limit = 20 } = req.query;
+    const isPatient = req.user?.role_id === PATIENT_ROLE_ID;
+    const effectivePatientId = isPatient ? req.user?.patient_id : (patient_id ? parseInt(patient_id) : null);
     const filters = {
-      patient_id: patient_id ? parseInt(patient_id) : null,
+      patient_id: effectivePatientId,
       branch_id: branch_id ? parseInt(branch_id) : null,
       contract_type,
       is_signed: is_signed !== undefined ? is_signed === 'true' : undefined,
@@ -34,6 +38,9 @@ const getPatientContract = async (req, res) => {
   try {
     const contract = await getPatientContractById(parseInt(req.params.id));
     if (!contract) return res.status(404).json({ success: false, error: 'Contrato no encontrado' });
+    if (req.user?.role_id === PATIENT_ROLE_ID && contract.patient_id !== req.user?.patient_id) {
+      return res.status(403).json({ success: false, error: 'Acceso denegado al contrato' });
+    }
     res.json({ success: true, data: contract });
   } catch (error) {
     console.error('Error al obtener contrato:', error);
@@ -74,8 +81,19 @@ const updateExistingPatientContract = async (req, res) => {
 
 const deleteExistingPatientContract = async (req, res) => {
   try {
-    const deleted = await deletePatientContract(parseInt(req.params.id), req.user.user_id);
+    const contractId = parseInt(req.params.id);
+    const existing = await getPatientContractById(contractId);
+    const deleted = await deletePatientContract(contractId, req.user.user_id);
     if (!deleted) return res.status(404).json({ success: false, error: 'Contrato no encontrado' });
+
+    if (global.io && existing?.patient_id) {
+      global.io.to(`patient-${existing.patient_id}`).emit('contract-deleted', {
+        patient_contract_id: contractId,
+        patient_id: existing.patient_id,
+        timestamp: new Date().toISOString()
+      });
+    }
+
     res.json({ success: true, message: 'Contrato eliminado exitosamente' });
   } catch (error) {
     console.error('Error al eliminar contrato:', error);

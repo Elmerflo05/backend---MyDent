@@ -14,20 +14,20 @@ const {
 } = require('../controllers/consentsController');
 
 // Roles permitidos para administrar consentimientos (crear, editar, eliminar)
+// 1: super_admin, 2: admin, 3: doctor, 4: receptionist, 5: imaging_tech
 const verificarRolesAdmin = (req, res, next) => {
   const rol = req.user?.role_id;
-  // 1: super_admin, 2: admin, 3: doctor, 4: receptionist, 5: imaging_tech, 6: prosthesis_tech
-  if (![1, 2, 3, 4, 5, 6].includes(rol)) {
+  if (![1, 2, 3, 4, 5].includes(rol)) {
     return res.status(403).json({ mensaje: 'Acceso denegado: Rol no autorizado' });
   }
   next();
 };
 
-// Roles permitidos para ver consentimientos (incluye pacientes)
+// Roles permitidos para ver consentimientos
+// 1-5: staff, 6: paciente (solo ve los propios; el filtro se fuerza en el controller)
 const verificarRolesLectura = (req, res, next) => {
   const rol = req.user?.role_id;
-  // 1-6: staff, 7: patient (puede ver sus propios consentimientos)
-  if (![1, 2, 3, 4, 5, 6, 7].includes(rol)) {
+  if (![1, 2, 3, 4, 5, 6].includes(rol)) {
     return res.status(403).json({ mensaje: 'Acceso denegado: Rol no autorizado' });
   }
   next();

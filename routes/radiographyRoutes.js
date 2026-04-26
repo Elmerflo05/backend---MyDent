@@ -9,7 +9,10 @@ const {
   getRadiographyRequest,
   createNewRadiographyRequest,
   updateExistingRadiographyRequest,
-  deleteExistingRadiographyRequest,
+  rejectExistingRadiographyRequest,
+  reactivateExistingRadiographyRequest,
+  getAllOrdersForAdminHandler,
+  getRequestsByConsultationHandler,
   upsertRadiographyRequestHandler,
   approvePricingHandler,
   rejectPricingHandler,
@@ -56,6 +59,14 @@ router.get('/', getRadiographyRequests);
 // GET /api/radiography/external-payments - Obtener todos los pagos externos (admin/recepcionista)
 // IMPORTANTE: Esta ruta debe ir ANTES de /:id para evitar conflictos
 router.get('/external-payments', getAllExternalPaymentsHandler);
+
+// GET /api/radiography/admin/orders - Listado completo para panel SA
+// IMPORTANTE: Esta ruta debe ir ANTES de /:id para evitar conflictos
+router.get('/admin/orders', getAllOrdersForAdminHandler);
+
+// GET /api/radiography/by-consultation/:consultationId - Lista por consulta (incluye rechazadas)
+// IMPORTANTE: Esta ruta debe ir ANTES de /:id para evitar conflictos
+router.get('/by-consultation/:consultationId', getRequestsByConsultationHandler);
 
 router.get('/:id', getRadiographyRequest);
 
@@ -108,8 +119,14 @@ router.get('/:id/payment', getPaymentInfoHandler);
 router.post('/', createNewRadiographyRequest);
 router.post('/upsert', upsertRadiographyRequestHandler);
 
-// Rutas de modificación/eliminación (solo staff interno, external_client NO puede)
+// Rutas de modificación/rechazo (solo staff interno, external_client NO puede)
 router.put('/:id', verificarRolModificacion, updateExistingRadiographyRequest);
-router.delete('/:id', verificarRolModificacion, deleteExistingRadiographyRequest);
+
+// DELETE /api/radiography/:id - Rechazo por técnico (acepta { reason } en body)
+// Mantener verbo DELETE por compatibilidad con clientes existentes; semánticamente es un reject.
+router.delete('/:id', verificarRolModificacion, rejectExistingRadiographyRequest);
+
+// POST /api/radiography/:id/reactivate - Reactivar orden rechazada (super_admin / admin)
+router.post('/:id/reactivate', verificarRolModificacion, reactivateExistingRadiographyRequest);
 
 module.exports = router;

@@ -1,6 +1,6 @@
 /**
  * Rutas del Portal del Paciente
- * Endpoints especificos para pacientes logueados (rol 7)
+ * Endpoints especificos para pacientes logueados (rol 6)
  * Permite a los pacientes ver su propio historial medico
  */
 
@@ -18,6 +18,7 @@ const {
   addExternalExamLink,
   deleteMyExternalExam
 } = require('../controllers/patientPortalController');
+const { getMyDocuments } = require('../controllers/patientDocumentsController');
 const { uploadPatientExternalExam } = require('../config/multerConfig');
 const { s3Upload } = require('../middleware/s3UploadMiddleware');
 const {
@@ -27,23 +28,23 @@ const {
   markAllPatientNotificationsRead
 } = require('../controllers/notificationsController');
 
+const PATIENT_ROLE_ID = 6;
+
 /**
- * Middleware para validar que el usuario sea un paciente (rol 7)
- * o tenga un rol que permita acceso (roles 1-6 para testing/admin)
+ * Middleware para validar que el usuario sea un paciente (rol 6)
+ * o tenga un rol que permita acceso (roles 1-5 para testing/admin)
  */
 const verificarRolPaciente = (req, res, next) => {
   const rol = req.user?.role_id;
 
-  // Rol 7 = Paciente, roles 1-6 = Staff (para testing y administracion)
-  if (![1, 2, 3, 4, 5, 6, 7].includes(rol)) {
+  if (![1, 2, 3, 4, 5, 6].includes(rol)) {
     return res.status(403).json({
       success: false,
       mensaje: 'Acceso denegado: Rol no autorizado para el portal de paciente'
     });
   }
 
-  // Si es paciente (rol 7), debe tener patient_id
-  if (rol === 7 && !req.user?.patient_id) {
+  if (rol === PATIENT_ROLE_ID && !req.user?.patient_id) {
     return res.status(403).json({
       success: false,
       mensaje: 'Acceso denegado: Usuario paciente sin ID de paciente asociado'
@@ -115,6 +116,16 @@ router.post('/external-exams/link', addExternalExamLink);
  * Elimina un examen externo del paciente
  */
 router.delete('/external-exams/:examId', deleteMyExternalExam);
+
+// ============================================================================
+// RUTAS DE DOCUMENTOS DEL PACIENTE
+// ============================================================================
+
+/**
+ * GET /api/patient-portal/my-documents
+ * Obtiene los documentos del paciente logueado (filtrado por patient_id del token)
+ */
+router.get('/my-documents', getMyDocuments);
 
 // ============================================================================
 // RUTAS DE NOTIFICACIONES DEL PACIENTE

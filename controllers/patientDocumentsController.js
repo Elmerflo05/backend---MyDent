@@ -7,6 +7,8 @@ const {
   countPatientDocuments
 } = require('../models/patientDocumentsModel');
 
+const PATIENT_ROLE_ID = 6;
+
 const getPatientDocuments = async (req, res) => {
   try {
     const { patient_id, document_type, search, page = 1, limit = 20 } = req.query;
@@ -85,14 +87,62 @@ const updateExistingPatientDocument = async (req, res) => {
 const deleteExistingPatientDocument = async (req, res) => {
   try {
     const { id } = req.params;
-    const deleted = await deletePatientDocument(parseInt(id), req.user.user_id);
+    const documentId = parseInt(id);
+    const existing = await getPatientDocumentById(documentId);
+    const deleted = await deletePatientDocument(documentId, req.user.user_id);
     if (!deleted) {
       return res.status(404).json({ success: false, error: 'Documento no encontrado' });
     }
+
+    if (global.io && existing?.patient_id) {
+      global.io.to(`patient-${existing.patient_id}`).emit('document-deleted', {
+        patient_document_id: documentId,
+        patient_id: existing.patient_id,
+        timestamp: new Date().toISOString()
+      });
+    }
+
     res.json({ success: true, message: 'Documento eliminado exitosamente' });
   } catch (error) {
     console.error('Error al eliminar documento:', error);
     res.status(500).json({ success: false, error: 'Error al eliminar documento' });
+  }
+};
+
+const getMyDocuments = async (req, res) => {
+  try {
+    const patientId = req.user?.patient_id;
+    if (!patientId) {
+      return res.status(400).json({ success: false, error: 'Usuario no tiene un paciente asociado' });
+    }
+
+    const { document_type, search, page = 1, limit = 50 } = req.query;
+    const filters = {
+      patient_id: parseInt(patientId),
+      document_type,
+      search,
+      limit: parseInt(limit),
+      offset: (parseInt(page) - 1) * parseInt(limit)
+    };
+
+    const [documents, total] = await Promise.all([
+      getAllPatientDocuments(filters),
+      countPatientDocuments(filters)
+    ]);
+
+    res.json({
+      success: true,
+      data: documents,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Error al obtener mis documentos:', error);
+    res.status(500).json({ success: false, error: 'Error al obtener documentos' });
   }
 };
 
@@ -101,5 +151,6 @@ module.exports = {
   getPatientDocument,
   createNewPatientDocument,
   updateExistingPatientDocument,
-  deleteExistingPatientDocument
+  deleteExistingPatientDocument,
+  getMyDocuments
 };

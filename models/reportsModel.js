@@ -558,6 +558,8 @@ const getServicesReport = async (branchId, fechaInicio, fechaFin) => {
     `;
 
     // Query para servicios de laboratorio (radiografías)
+    // Excluye solicitudes rechazadas por el técnico (no son servicios prestados)
+    const { RADIOGRAPHY_REQUEST_STATUS } = require('../constants/radiographyStatus');
     const labQuery = `
       SELECT
         COALESCE(rr.radiography_type, 'Radiografía') as name,
@@ -566,6 +568,7 @@ const getServicesReport = async (branchId, fechaInicio, fechaFin) => {
       WHERE rr.request_date >= $1
         AND rr.request_date <= $2
         AND rr.status = 'active'
+        AND (rr.request_status IS NULL OR rr.request_status != '${RADIOGRAPHY_REQUEST_STATUS.REJECTED_BY_TECHNICIAN}')
         ${branchId ? 'AND rr.branch_id = $3' : ''}
       GROUP BY rr.radiography_type
       ORDER BY count DESC

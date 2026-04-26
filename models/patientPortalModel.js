@@ -309,6 +309,8 @@ const getPatientIntegralConsultations = async (patientId) => {
       }
 
       // 6. Obtener solicitud de radiografia/examenes auxiliares
+      // Excluye rechazadas por el técnico — el paciente no debe verlas en su portal
+      const { RADIOGRAPHY_REQUEST_STATUS } = require('../constants/radiographyStatus');
       const radiographyQuery = `
         SELECT
           rr.radiography_request_id,
@@ -320,10 +322,15 @@ const getPatientIntegralConsultations = async (patientId) => {
           rr.request_status,
           rr.request_data
         FROM radiography_requests rr
-        WHERE rr.consultation_id = $1 AND rr.status = 'active'
+        WHERE rr.consultation_id = $1
+          AND rr.status = 'active'
+          AND (rr.request_status IS NULL OR rr.request_status != $2)
         ORDER BY rr.request_date DESC
       `;
-      const radiographyResult = await pool.query(radiographyQuery, [consultationId]);
+      const radiographyResult = await pool.query(radiographyQuery, [
+        consultationId,
+        RADIOGRAPHY_REQUEST_STATUS.REJECTED_BY_TECHNICIAN
+      ]);
       const radiographyRequests = radiographyResult.rows;
 
       // 6.1. Obtener resultados de radiografia (subidos por tecnico de imagenes)
@@ -574,6 +581,8 @@ const getPatientMedicalBackground = async (patientId) => {
  */
 const getPatientLaboratoryRadiographyRequests = async (patientId) => {
   // Obtener radiografías del paciente que NO tienen consultation_id
+  // Excluye rechazadas por el técnico — no son visibles en historial del paciente
+  const { RADIOGRAPHY_REQUEST_STATUS } = require('../constants/radiographyStatus');
   const radiographyQuery = `
     SELECT
       rr.radiography_request_id,
@@ -592,9 +601,13 @@ const getPatientLaboratoryRadiographyRequests = async (patientId) => {
     WHERE rr.patient_id = $1
       AND rr.consultation_id IS NULL
       AND rr.status = 'active'
+      AND (rr.request_status IS NULL OR rr.request_status != $2)
     ORDER BY rr.request_date DESC
   `;
-  const radiographyResult = await pool.query(radiographyQuery, [patientId]);
+  const radiographyResult = await pool.query(radiographyQuery, [
+    patientId,
+    RADIOGRAPHY_REQUEST_STATUS.REJECTED_BY_TECHNICIAN
+  ]);
   const radiographyRequests = radiographyResult.rows;
 
   // Cargar resultados para cada solicitud
